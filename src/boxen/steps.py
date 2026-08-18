@@ -1,6 +1,6 @@
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 from .image import ImageT
 
@@ -13,7 +13,7 @@ class Apt:
         return image.apt_install(*self.packages)
 
 
-def apt(*packages: str) -> Apt:
+def apt_install(*packages: str) -> Apt:
     return Apt(packages)
 
 
@@ -25,7 +25,7 @@ class Pip:
         return image.pip_install(*self.packages)
 
 
-def pip(*packages: str) -> Pip:
+def pip_install(*packages: str) -> Pip:
     return Pip(packages)
 
 
@@ -38,7 +38,7 @@ class Run:
         return image.run_commands(*self.commands, secrets=self.secrets)
 
 
-def run(*commands: str, secrets: Sequence[object] = ()) -> Run:
+def run_commands(*commands: str, secrets: Sequence[object] = ()) -> Run:
     return Run(commands, tuple(secrets))
 
 
@@ -74,7 +74,7 @@ class Dockerfile:
         return image.dockerfile_commands(*self.commands)
 
 
-def dockerfile(*commands: str) -> Dockerfile:
+def dockerfile_commands(*commands: str) -> Dockerfile:
     return Dockerfile(commands)
 
 
@@ -82,26 +82,42 @@ def dockerfile(*commands: str) -> Dockerfile:
 class LocalFile:
     local_path: str
     remote_path: str
+    copy: bool = False
 
     def __call__(self, image: ImageT) -> ImageT:
-        return image.add_local_file(self.local_path, self.remote_path)
+        return image.add_local_file(self.local_path, self.remote_path, copy=self.copy)
 
 
-def local_file(local_path: str | Path, remote_path: str) -> LocalFile:
-    return LocalFile(str(local_path), remote_path)
+def add_local_file(
+    local_path: str | Path, remote_path: str, *, copy: bool = False
+) -> LocalFile:
+    return LocalFile(str(local_path), remote_path, copy)
 
 
 @dataclass(frozen=True)
 class LocalDir:
     local_path: str
     remote_path: str
+    copy: bool = False
+    ignore: tuple[str, ...] = ()
 
     def __call__(self, image: ImageT) -> ImageT:
-        return image.add_local_dir(self.local_path, self.remote_path)
+        return image.add_local_dir(
+            self.local_path,
+            self.remote_path,
+            copy=self.copy,
+            ignore=self.ignore,
+        )
 
 
-def local_dir(local_path: str | Path, remote_path: str) -> LocalDir:
-    return LocalDir(str(local_path), remote_path)
+def add_local_dir(
+    local_path: str | Path,
+    remote_path: str,
+    *,
+    copy: bool = False,
+    ignore: Sequence[str] = (),
+) -> LocalDir:
+    return LocalDir(str(local_path), remote_path, copy, tuple(ignore))
 
 
 @dataclass(frozen=True)
@@ -124,7 +140,7 @@ class Call:
         )
 
 
-def call(
+def run_function(
     fn: Callable[..., object],
     *,
     args: Sequence[object] = (),
