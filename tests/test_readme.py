@@ -216,6 +216,10 @@ class ReadmeExampleTests(unittest.TestCase):
         )
         self.assertIn("api.refresh(session.sandbox)", README.read_text())
 
+    def test_documented_mcp_example_installs_ripgrep_for_search_tools(self) -> None:
+        blocks = re.findall(r"```python\n(.*?)```", README.read_text(), re.DOTALL)
+        self.assertIn('build=[envy.apt_install("ripgrep")]', blocks[2])
+
     def test_documented_step_and_source_names_are_public(self) -> None:
         import envy
 

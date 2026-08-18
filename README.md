@@ -69,7 +69,12 @@ import modal
 import envy
 
 app = envy.Envy("acme-devboxes")
-api = app.env("api", base=modal.Image.debian_slim())
+api = app.env(
+    "api",
+    base=modal.Image.debian_slim(),
+    # The MCP glob and grep tools use ripgrep inside the sandbox.
+    build=[envy.apt_install("ripgrep")],
+)
 
 # The MCP control plane needs its own image. It must include the MCP
 # dependencies and this module, because the server builds environments from
@@ -101,7 +106,8 @@ its `app.env(...)` declaration. The server builds and launches those
 environments directly and exposes `create_sandbox`, `kill_sandbox`, `bash`,
 `read`, `write`, `edit`, `glob`, and `grep`. Only sandboxes created through
 this server are accepted by the tools; ownership is checked using the reserved
-`envy.app` and `envy.env` tags.
+`envy.app` and `envy.env` tags. The sandbox image must provide `bash` and
+`ripgrep`; the latter is installed above for the `glob` and `grep` tools.
 
 ## Keeping images warm
 
