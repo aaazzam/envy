@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from datetime import UTC, datetime
+from hmac import compare_digest
 from re import fullmatch
-from typing import TYPE_CHECKING, Any, Generic, Protocol, cast, final
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Protocol, cast, final
 
 from .env import Env
 from .errors import ConfigurationError, LifecycleError
@@ -34,12 +37,16 @@ class _SandboxApi(Protocol):
 
 
 class _BuildableImage(Protocol):
+    object_id: str
+
     def build(self, app: object) -> object: ...
 
 
 class _ModalApi(Protocol):
     App: _AppApi
     Sandbox: _SandboxApi
+    Image: Any
+    Dict: Any
 
     def enable_output(self) -> AbstractContextManager[None]: ...
 
@@ -61,6 +68,14 @@ class _EnvApi(Protocol):
     def spec(self, *, stamp: str) -> _SpecApi: ...
     def start(self, sandbox: Sandbox) -> None: ...
     def freeze(self) -> None: ...
+
+
+def _registry_name(app_name: str) -> str:
+    """Return a stable, Modal-compatible name for the image registry Dict."""
+    normalized = "".join(
+        character.lower() if character.isalnum() else "-" for character in app_name
+    ).strip("-")
+    return f"envy-{normalized or 'app'}-images"
 
 
 def _cleanup_sandbox(
@@ -256,6 +271,7 @@ class ModalRunner:
         envy: Envy,
         *,
         environment_name: str | None = None,
+        modal_app: object | None = None,
         show_output: bool = True,
         timeout: int = 300,
         idle_timeout: int | None = None,
@@ -267,7 +283,7 @@ class ModalRunner:
         self.timeout = timeout
         self.idle_timeout = idle_timeout
         self._modal_module = _modal
-        self._resolved_app: modal.App | None = None
+        self._resolved_app: modal.App | None = cast("modal.App | None", modal_app)
 
     @property
     def modal(self) -> _ModalApi:
@@ -304,6 +320,144 @@ class ModalRunner:
             )
             return cast(ImageT, image.build(self.app))
 
+    def _image_registry(self) -> Any | None:
+        """Return the persistent image-id registry when supported."""
+        dict_type = getattr(self.modal, "Dict", None)
+        if dict_type is None:
+            return None
+        return dict_type.from_name(
+            _registry_name(self.envy.name),
+            create_if_missing=True,
+            environment_name=self.environment_name,
+        )
+
+    def _stored_image_id(self, environment: str) -> str | None:
+        registry = self._image_registry()
+        if registry is None:
+            return None
+        value: Any = registry.get(environment)
+        if isinstance(value, dict):
+            image_id = cast(dict[str, object], value).get("image_id")
+        else:
+            image_id = value
+        return image_id if isinstance(image_id, str) and image_id else None
+
+    def _remember_image(self, environment: str, image: object, stamp: str) -> str:
+        image_id = getattr(image, "object_id", None)
+        registry = self._image_registry()
+        if registry is None:
+            return image_id if isinstance(image_id, str) else ""
+        if not isinstance(image_id, str) or not image_id:
+            raise RuntimeError("Modal returned a built image without an object id")
+        registry[environment] = {
+            "image_id": image_id,
+            "stamp": stamp,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        return image_id
+
+    def rebake(
+        self,
+        environment: str | None = None,
+        *,
+        stamp: str | None = None,
+    ) -> dict[str, str]:
+        """Eagerly build and record the latest image for one or all environments.
+
+        A timestamp stamp is used by default so Git sources are re-cloned from
+        their configured ref even when the declaration's normal stamp is static.
+        """
+        self.envy.freeze()
+        names = (environment,) if environment is not None else self.envy.environments
+        for name in names:
+            self.envy.environment(name)
+        resolved_stamp = stamp or datetime.now(UTC).isoformat()
+        image_ids: dict[str, str] = {}
+        for name in names:
+            env = self.envy.environment(name)
+            built = self.build(env.spec(stamp=resolved_stamp))
+            image_ids[name] = self._remember_image(name, built, resolved_stamp)
+        return image_ids
+
+    def install_rebake_schedule(
+        self,
+        modal_app: Any,
+        *,
+        cron: str = "*/30 * * * *",
+        timezone: str = "UTC",
+        name: str = "envy-rebake",
+        timeout: int = 60 * 60,
+    ) -> Any:
+        """Register a Modal cron function that rebakes all environments."""
+        import modal
+
+        runner = self
+
+        @modal_app.function(
+            schedule=modal.Cron(cron, timezone=timezone),
+            name=name,
+            timeout=timeout,
+        )
+        def rebake() -> dict[str, str]:
+            return runner.rebake()
+
+        return rebake
+
+    def install_rebake_endpoint(
+        self,
+        modal_app: Any,
+        *,
+        token_secret: str,
+        token_env: str = "ENVY_REBAKE_TOKEN",
+        name: str = "envy-rebake-endpoint",
+        label: str | None = None,
+        timeout: int = 60 * 60,
+        requires_proxy_auth: bool = True,
+    ) -> Any:
+        """Register an authenticated POST endpoint for manual rebakes.
+
+        ``token_secret`` must contain ``token_env``. The endpoint accepts a
+        bearer token and optionally also requires Modal proxy authentication.
+        An optional JSON ``environment`` field limits the rebake to one
+        declared environment.
+        """
+        import modal
+        from fastapi import Depends, HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+        if not fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+            raise ConfigurationError(
+                "token_env must be a valid environment variable name"
+            )
+
+        runner = self
+        bearer = HTTPBearer(auto_error=True)
+        fastapi_endpoint = cast(Any, modal.fastapi_endpoint)
+
+        @modal_app.function(
+            name=name,
+            secrets=[modal.Secret.from_name(token_secret, required_keys=[token_env])],
+            timeout=timeout,
+        )
+        @fastapi_endpoint(
+            method="POST",
+            label=label,
+            requires_proxy_auth=requires_proxy_auth,
+        )
+        def rebake_endpoint(
+            credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer)],
+            data: dict[str, str] | None = None,
+        ) -> dict[str, str]:
+            expected = os.environ.get(token_env)
+            if expected is None or not compare_digest(
+                credentials.credentials, expected
+            ):
+                raise HTTPException(status_code=401, detail="Invalid bearer token")
+            environment = data.get("environment") if data else None
+            return runner.rebake(environment=environment)
+
+        return rebake_endpoint
+
     def launch(
         self,
         environment: str,
@@ -325,11 +479,17 @@ class ModalRunner:
         spec: SandboxSpec[ImageT],
         *,
         build: bool = True,
+        image_key: str | None = None,
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> modal.Sandbox:
         """Build ``spec`` and create its Modal Sandbox."""
-        image = self.build(spec) if build else spec.image
+        image: object
+        stored_image_id = self._stored_image_id(image_key) if image_key else None
+        if stored_image_id is not None:
+            image = self.modal.Image.from_id(stored_image_id)
+        else:
+            image = self.build(spec) if build else spec.image
 
         sandbox_tags = {key: str(value) for key, value in spec.metadata.items()}
         sandbox_tags.update(tags or {})
@@ -403,8 +563,14 @@ class ModalRunner:
         spec = env.spec(stamp=resolved_stamp)
         env_tags = {"envy.env": str(env.name)}
         env_tags.update(tags or {})
-        sandbox = self.launch_spec(spec, name=name, tags=env_tags)
+        sandbox = self.launch_spec(
+            spec,
+            name=name,
+            image_key=str(env.name),
+            tags=env_tags,
+        )
         try:
+            env.refresh(sandbox)
             env.start(sandbox)
         except BaseException as error:
             _cleanup_sandbox(sandbox, error)

@@ -1,13 +1,19 @@
+import os
 import unittest
 from contextlib import contextmanager
+from unittest.mock import patch
+
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 
 from envy.modal import Envy, ModalRunner
 from envy.sandbox import Resources, SandboxSpec
 
 
 class FakeImage:
-    def __init__(self) -> None:
+    def __init__(self, object_id=None) -> None:
         self.built_with = None
+        self.object_id = object_id
 
     def build(self, app):
         self.built_with = app
@@ -83,6 +89,41 @@ class FakeModal:
     def enable_output(self):
         self.output_enabled += 1
         yield
+
+
+class FakeImageRegistry:
+    def __init__(self) -> None:
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def __setitem__(self, key, value):
+        self.values[key] = value
+
+
+class FakeModalWithImageRegistry(FakeModal):
+    def __init__(self) -> None:
+        super().__init__()
+        self.registry = FakeImageRegistry()
+        self.dict_calls = []
+        self.image_from_id_calls = []
+        owner = self
+
+        class DictApi:
+            @staticmethod
+            def from_name(name, **kwargs):
+                owner.dict_calls.append((name, kwargs))
+                return owner.registry
+
+        class ImageApi:
+            @staticmethod
+            def from_id(image_id):
+                owner.image_from_id_calls.append(image_id)
+                return ("image-ref", image_id)
+
+        self.Dict = DictApi()
+        self.Image = ImageApi()
 
 
 def make_spec(image):
@@ -170,6 +211,105 @@ class ModalRunnerTests(unittest.TestCase):
             modal.create_calls[0]["tags"],
             {"team": "api", "revision": "7", "envy.env": "api"},
         )
+
+    def test_run_refreshes_before_start_hooks(self):
+        modal = FakeModal()
+        events = []
+        envy = Envy("envy-test")
+        env = envy.env("api", base=FakeImage())
+        env.on_start(lambda _sandbox: events.append("start"))
+
+        with patch.object(
+            env, "refresh", side_effect=lambda _sandbox: events.append("refresh")
+        ):
+            ModalRunner(envy, show_output=False, _modal=modal).run(env)
+
+        self.assertEqual(events, ["refresh", "start"])
+
+    def test_rebake_records_image_ids_and_launch_uses_latest_image(self):
+        modal = FakeModalWithImageRegistry()
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage("img-api"))
+        runner = ModalRunner(envy, show_output=False, _modal=modal)
+
+        self.assertEqual(runner.rebake(stamp="commit-sha"), {"api": "img-api"})
+        self.assertEqual(modal.registry.values["api"]["stamp"], "commit-sha")
+
+        runner.launch("api")
+
+        self.assertEqual(modal.image_from_id_calls, ["img-api"])
+        self.assertEqual(modal.create_calls[0]["image"], ("image-ref", "img-api"))
+
+    def test_install_rebake_schedule_registers_modal_cron(self):
+        modal = FakeModal()
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, show_output=False, _modal=modal)
+
+        class FakeModalApp:
+            def __init__(self):
+                self.function_options = None
+
+            def function(self, **kwargs):
+                self.function_options = kwargs
+
+                def decorate(fn):
+                    return fn
+
+                return decorate
+
+        modal_app = FakeModalApp()
+        rebake = runner.install_rebake_schedule(modal_app)
+
+        self.assertEqual(rebake.__name__, "rebake")
+        self.assertEqual(modal_app.function_options["name"], "envy-rebake")
+        self.assertEqual(
+            modal_app.function_options["schedule"].proto_message.cron.cron_string,
+            "*/30 * * * *",
+        )
+
+    def test_install_rebake_endpoint_requires_a_valid_token_variable(self):
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, show_output=False, _modal=FakeModal())
+
+        with self.assertRaisesRegex(ValueError, "token_env"):
+            runner.install_rebake_endpoint(
+                object(), token_secret="secret", token_env="bad-name"
+            )
+
+    def test_install_rebake_endpoint_checks_bearer_token(self):
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, show_output=False, _modal=FakeModal())
+
+        class FakeModalApp:
+            def function(self, **_kwargs):
+                def decorate(fn):
+                    return fn
+
+                return decorate
+
+        endpoint = runner.install_rebake_endpoint(FakeModalApp(), token_secret="secret")
+        raw_endpoint = endpoint._get_raw_f()
+
+        with (
+            patch.dict(os.environ, {"ENVY_REBAKE_TOKEN": "correct"}),
+            patch.object(runner, "rebake", return_value={"api": "image-id"}),
+        ):
+            credentials = HTTPAuthorizationCredentials(
+                scheme="Bearer", credentials="correct"
+            )
+            self.assertEqual(
+                raw_endpoint(credentials, {"environment": "api"}),
+                {"api": "image-id"},
+            )
+
+            with self.assertRaises(HTTPException):
+                raw_endpoint(
+                    HTTPAuthorizationCredentials(scheme="Bearer", credentials="wrong"),
+                    "api",
+                )
 
     def test_run_cleans_up_when_a_ready_hook_fails(self):
         modal = FakeModal()

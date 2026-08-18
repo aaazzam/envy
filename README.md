@@ -75,8 +75,10 @@ def serve():
     return mcp.http_app(stateless_http=True)
 ```
 
-Deploy the MCP control plane with `modal deploy devboxes.py`. Envy environments
-are built when they are first launched.
+Deploy the MCP control plane with `modal deploy devboxes.py`. Before the first
+rebake, Envy builds an environment inline. After that, sandbox creation uses
+the latest image ID recorded in a persistent Modal Dict, so image builds stay
+off the latency-sensitive sandbox path.
 
 `control_plane_image` must contain the MCP dependencies and the module that
 declares `app`. The MCP server builds and launches environments directly from
@@ -85,12 +87,38 @@ the Envy declaration and exposes `create_sandbox`, `kill_sandbox`, `bash`,
 Only sandboxes created through this server are accepted by the tools; ownership
 is checked using the reserved `envy.app` and `envy.env` tags.
 
+## Keeping images warm
+
+Register a scheduled rebake and a private manual endpoint on the same Modal app:
+
+```python
+runner = envy.ModalRunner(app, modal_app=modal_app)
+
+runner.install_rebake_schedule(
+    modal_app,
+    cron="*/30 * * * *",
+)
+runner.install_rebake_endpoint(
+    modal_app,
+    token_secret="acme-devbox-rebake-token",
+)
+```
+
+The Modal Secret must contain `ENVY_REBAKE_TOKEN`. Call the endpoint with
+`POST`, `Authorization: Bearer <token>`, and Modal’s `Modal-Key` and
+`Modal-Secret` proxy-auth headers. Send `{"environment": "api"}` as JSON to
+rebake one environment; omit the body to rebake all environments. Modal proxy
+authentication is enabled by default, and can be disabled with
+`requires_proxy_auth=False` when the bearer token alone is enough.
+The scheduled function and endpoint can both be deployed with the control plane.
+
 ## Launching it
 
 ```python
 runner = envy.ModalRunner(app, timeout=60 * 60, idle_timeout=15 * 60)
 with runner.session(api) as session:
-    api.refresh(session.sandbox)
+    # New sandboxes refresh their sources before this context is returned.
+    print(session.sandbox_id)
 
 # Reopen the same sandbox later with its persisted ID.
 with runner.session(api, sandbox_id=session.sandbox_id) as session:
