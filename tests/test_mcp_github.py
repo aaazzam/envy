@@ -1,25 +1,11 @@
-import io
-import json
+import asyncio
 import unittest
-from urllib.error import HTTPError, URLError
+from unittest.mock import patch
 
-from envy.mcp.github import GitHubRepository, create_pull_request, parse_github_remote
+from fastmcp import FastMCP
 
-
-class Response:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.payload = payload
-
-    def read(self) -> bytes:
-        return json.dumps(self.payload).encode("utf-8")
-
-
-class RawResponse:
-    def __init__(self, payload: bytes) -> None:
-        self.payload = payload
-
-    def read(self) -> bytes:
-        return self.payload
+from envy.mcp.github import GitHubRepository, github_provider, parse_github_remote
+from envy.mcp.github_transform import WorkspacePublishTransform
 
 
 class GitHubTests(unittest.TestCase):
@@ -39,125 +25,86 @@ class GitHubTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "could not parse"):
             parse_github_remote("https://github.com/acme")
 
-    def test_create_pull_request_reports_configuration_and_network_errors(self) -> None:
-        repository = GitHubRepository(owner="acme", name="project")
-        with self.assertRaisesRegex(ValueError, "token is empty"):
-            create_pull_request(
-                repository,
-                token="",
-                head="feature",
-                base="main",
-                title="Title",
-                body="",
-                draft=False,
-            )
+    def test_provider_can_namespace_github_tools(self) -> None:
+        provider = github_provider(
+            "https://api.githubcopilot.com/mcp/",
+            namespace="github",
+        )
 
-        def rejected(_request, *, timeout):
-            raise HTTPError(
-                "https://api.github.com",
-                403,
-                "forbidden",
-                None,
-                io.BytesIO(b'{"message":"forbidden"}'),
-            )
+        self.assertEqual(len(provider.transforms), 1)
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "token"}, clear=True):
+            client = provider.client_factory()
+        self.assertEqual(
+            client.transport.headers,
+            {"X-MCP-Toolsets": "pull_requests"},
+        )
 
-        with self.assertRaisesRegex(RuntimeError, "forbidden"):
-            create_pull_request(
-                repository,
-                token="token",
-                head="feature",
-                base="main",
-                title="Title",
-                body="",
-                draft=False,
-                opener=rejected,
-            )
+    def test_provider_can_leave_github_tool_names_unprefixed(self) -> None:
+        provider = github_provider("https://api.githubcopilot.com/mcp/", namespace=None)
 
-        def unreachable(_request, *, timeout):
-            raise URLError("offline")
+        self.assertEqual(provider.transforms, [])
 
-        with self.assertRaisesRegex(RuntimeError, "could not reach GitHub"):
-            create_pull_request(
-                repository,
-                token="token",
-                head="feature",
-                base="main",
-                title="Title",
-                body="",
-                draft=False,
-                opener=unreachable,
-            )
+    def test_pull_request_tool_publishes_workspace_from_request_metadata(self) -> None:
+        async def exercise() -> tuple[str, list[str]]:
+            backend = FastMCP("github")
 
-    def test_create_pull_request_rejects_invalid_responses(self) -> None:
-        repository = GitHubRepository(owner="acme", name="project")
+            @backend.tool(name="create_pull_request")
+            def create_pull_request(owner: str, title: str) -> str:
+                return f"{owner}: {title}"
 
-        for payload in (b"not-json", b"\xff"):
-            with (
-                self.subTest(payload=payload),
-                self.assertRaisesRegex(RuntimeError, "invalid pull request response"),
+            parent = await backend.get_tool("create_pull_request")
+            calls: list[str] = []
+            transform = WorkspacePublishTransform(calls.append)
+
+            async def get_tool(_name: str, *, version=None):
+                return parent
+
+            with patch(
+                "envy.mcp.github_transform._sandbox_id_from_request",
+                return_value="ws-123",
             ):
-                create_pull_request(
-                    repository,
-                    token="token",
-                    head="feature",
-                    base="main",
-                    title="Title",
-                    body="",
-                    draft=False,
-                    opener=lambda _request, *, timeout, payload=payload: RawResponse(
-                        payload
-                    ),
+                wrapped = await transform.get_tool(
+                    "create_pull_request", get_tool, version=None
                 )
+                assert wrapped is not None
+                result = await wrapped.run({"owner": "acme", "title": "Improve"})
 
-        with self.assertRaisesRegex(RuntimeError, "unexpected pull request response"):
-            create_pull_request(
-                repository,
-                token="token",
-                head="feature",
-                base="main",
-                title="Title",
-                body="",
-                draft=False,
-                opener=lambda _request, *, timeout: RawResponse(b"[]"),
-            )
+            return result.structured_content["result"], calls
 
-    def test_create_pull_request_sends_expected_request(self) -> None:
-        requests = []
+        result, calls = asyncio.run(exercise())
+        self.assertEqual(result, "acme: Improve")
+        self.assertEqual(calls, ["ws-123"])
 
-        def opener(request, *, timeout):
-            requests.append((request, timeout))
-            return Response({"html_url": "https://github.com/acme/project/pull/7"})
+    def test_pull_request_tool_forwards_without_workspace_metadata(self) -> None:
+        async def exercise() -> tuple[str, list[str]]:
+            backend = FastMCP("github")
 
-        result = create_pull_request(
-            GitHubRepository(owner="acme", name="project"),
-            token="secret-token",
-            head="feature",
-            base="main",
-            title="Improve things",
-            body="Details",
-            draft=True,
-            opener=opener,
-        )
+            @backend.tool(name="update_pull_request")
+            def update_pull_request(title: str) -> str:
+                return title
 
-        request, timeout = requests[0]
-        self.assertEqual(timeout, 30)
-        self.assertEqual(
-            request.full_url,
-            "https://api.github.com/repos/acme/project/pulls",
-        )
-        self.assertEqual(
-            json.loads(request.data),
-            {
-                "title": "Improve things",
-                "head": "feature",
-                "base": "main",
-                "body": "Details",
-                "draft": True,
-            },
-        )
-        self.assertEqual(result["html_url"], "https://github.com/acme/project/pull/7")
-        self.assertNotIn("secret-token", request.data.decode("utf-8"))
-        self.assertIn("Bearer secret-token", request.headers["Authorization"])
+            parent = await backend.get_tool("update_pull_request")
+            calls: list[str] = []
+            transform = WorkspacePublishTransform(calls.append)
+
+            async def get_tool(_name: str, *, version=None):
+                return parent
+
+            with patch(
+                "envy.mcp.github_transform._sandbox_id_from_request",
+                return_value=None,
+            ):
+                wrapped = await transform.get_tool(
+                    "update_pull_request", get_tool, version=None
+                )
+                assert wrapped is not None
+                result = await wrapped.run({"title": "Already pushed"})
+
+            return result.structured_content["result"], calls
+
+        result, calls = asyncio.run(exercise())
+        self.assertEqual(result, "Already pushed")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

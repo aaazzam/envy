@@ -15,11 +15,13 @@ from fastmcp.server.providers import (
     LocalProvider,
     Provider,
 )
+from fastmcp.server.transforms import Transform
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from ..modal import Envy, ModalRunner
-from .github import create_pull_request, parse_github_remote
+from .github import PublishedBranch, github_provider, parse_github_remote
+from .github_transform import WorkspacePublishTransform
 from .toolbox import (
     APP_TAG,
     ENV_TAG,
@@ -48,15 +50,6 @@ class SandboxInfo(BaseModel):
     workspace_id: str
     environment: str
     workdir: str
-
-
-class PullRequestInfo(BaseModel):
-    """Result returned after a privileged branch push and PR creation."""
-
-    sandbox_id: str
-    branch: str
-    commit: str
-    pull_request_url: str
 
 
 def _workspace_registry_name(app_name: str) -> str:
@@ -96,7 +89,6 @@ class EnvyProvider(AggregateProvider):
         workspace_store: WorkspaceStore | None = None,
         git_secret: object | None = None,
         git_token_env: str = "GITHUB_TOKEN",
-        github_api_url: str = "https://api.github.com",
     ) -> None:
         if not fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", git_token_env):
             raise ValueError("git_token_env must be a valid environment variable name")
@@ -111,7 +103,6 @@ class EnvyProvider(AggregateProvider):
         )
         self.git_secret = git_secret
         self.git_token_env = git_token_env
-        self.github_api_url = github_api_url
         register_envy(envy)
         register_workspace_runtime(envy, self.runner, self.workspace_store)
 
@@ -125,12 +116,6 @@ class EnvyProvider(AggregateProvider):
         local.tool(
             self._kill_sandbox(),
             annotations=ToolAnnotations(destructiveHint=True),
-        )
-        local.tool(
-            self._publish_pull_request(),
-            annotations=ToolAnnotations(
-                readOnlyHint=False, destructiveHint=True, openWorldHint=True
-            ),
         )
         super().__init__(providers=[local, FileSystemProvider(TOOLS_DIR)])
 
@@ -203,181 +188,136 @@ class EnvyProvider(AggregateProvider):
 
         return kill_sandbox
 
-    def _publish_pull_request(self) -> Callable[..., PullRequestInfo]:
+    def publish_workspace_branch(self, sandbox_id: str) -> PublishedBranch:
+        """Push a committed workspace branch from an isolated publisher.
+
+        This is intentionally a Python helper rather than an MCP tool. A
+        GitHub PR tool can invoke it through ``WorkspacePublishTransform``
+        when the request carries ``envy.sandbox_id`` metadata.
+        """
+
         envy = self.envy
         runner = self.runner
+        if self.git_secret is None:
+            raise ValueError(
+                "workspace publishing requires git_secret on the MCP server"
+            )
+        if not os.environ.get(self.git_token_env):
+            raise ValueError(
+                f"the MCP server must have {self.git_token_env} set "
+                "for GitHub workspace publishing"
+            )
 
-        def publish_pull_request(
-            sandbox_id: Annotated[
-                str,
-                Field(
-                    description=(
-                        "The stable sandbox_id returned by create_sandbox. "
-                        "The working tree must already be committed and clean."
-                    )
-                ),
-            ],
-            title: Annotated[str, Field(description="Pull request title")],
-            body: Annotated[str, Field(description="Pull request description")] = "",
-            base: Annotated[
-                str, Field(description="Target branch for the pull request")
-            ] = "main",
-            draft: Annotated[
-                bool, Field(description="Create the pull request as a draft")
-            ] = True,
-        ) -> PullRequestInfo:
-            """Push a clean committed branch and create a GitHub pull request.
-
-            The canonical agent sandbox never receives the Git secret. It is
-            terminated into an exit snapshot, restored without secrets, and a
-            separate hidden sandbox receives the snapshot plus the configured
-            secret only for the push.
-            """
-            if self.git_secret is None:
-                raise ValueError(
-                    "publish_pull_request requires git_secret on the MCP server"
-                )
-            token = os.environ.get(self.git_token_env)
-            if not token:
-                raise ValueError(
-                    f"the MCP server must have {self.git_token_env} set "
-                    "for GitHub pull request creation"
-                )
-            if not title.strip():
-                raise ValueError("title must not be empty")
-            if not base.strip():
-                raise ValueError("base must not be empty")
-
-            record = get_workspace(sandbox_id, envy=envy)
-            owned = require_registered_sandbox(sandbox_id, envy)
-            workdir = record.environment.workdir
-            status = run_command(
+        record = get_workspace(sandbox_id, envy=envy)
+        owned = require_registered_sandbox(sandbox_id, envy)
+        workdir = record.environment.workdir
+        status = run_command(
+            owned.sandbox,
+            "git",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            workdir=workdir,
+        ).check()
+        if status.stdout.strip():
+            raise ValueError(
+                "working tree is dirty; stage and commit all changes before "
+                "calling a GitHub pull request write tool"
+            )
+        branch = (
+            run_command(
+                owned.sandbox, "git", "branch", "--show-current", workdir=workdir
+            )
+            .check()
+            .stdout.strip()
+        )
+        if not branch:
+            raise ValueError("cannot publish a detached HEAD")
+        if branch in {"main", "master", "trunk"}:
+            raise ValueError(
+                f"refusing to open a pull request from protected branch {branch!r}"
+            )
+        commit = (
+            run_command(owned.sandbox, "git", "rev-parse", "HEAD", workdir=workdir)
+            .check()
+            .stdout.strip()
+        )
+        remote = (
+            run_command(
                 owned.sandbox,
                 "git",
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
+                "remote",
+                "get-url",
+                "origin",
+                workdir=workdir,
+            )
+            .check()
+            .stdout.strip()
+        )
+        repository = parse_github_remote(remote)
+
+        original = record.sandbox
+        original.terminate(wait=True)
+        try:
+            snapshot = record.capture_exit_snapshot()
+        finally:
+            original.detach()
+
+        # Recreate the agent-visible workspace without the Git secret before
+        # starting the privileged publisher.
+        record.replace_from_snapshot(snapshot)
+
+        hidden = runner.launch_from_snapshot(
+            str(record.environment.name),
+            snapshot,
+            tags={"envy.publisher": "true"},
+            secrets=(self.git_secret,),
+        )
+        askpass_path = "/tmp/envy-git-askpass"
+        askpass = (
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+            f"  *Password*) printf '%s\\n' \"${self.git_token_env}\" ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac\n"
+        )
+        try:
+            file = hidden.open(askpass_path, "w")
+            with file:
+                file.write(askpass)
+            run_command(hidden, "chmod", "700", askpass_path).check()
+            run_command(
+                hidden,
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                f"https://github.com/{repository.owner}/{repository.name}.git",
                 workdir=workdir,
             ).check()
-            if status.stdout.strip():
-                raise ValueError(
-                    "working tree is dirty; stage and commit all changes before "
-                    "calling publish_pull_request"
-                )
-            branch = (
-                run_command(
-                    owned.sandbox, "git", "branch", "--show-current", workdir=workdir
-                )
-                .check()
-                .stdout.strip()
-            )
-            if not branch:
-                raise ValueError("cannot publish a detached HEAD")
-            if branch in {"main", "master", "trunk"}:
-                raise ValueError(
-                    f"refusing to open a pull request from protected branch {branch!r}"
-                )
-            commit = (
-                run_command(owned.sandbox, "git", "rev-parse", "HEAD", workdir=workdir)
-                .check()
-                .stdout.strip()
-            )
-            remote = (
-                run_command(
-                    owned.sandbox,
-                    "git",
-                    "remote",
-                    "get-url",
-                    "origin",
-                    workdir=workdir,
-                )
-                .check()
-                .stdout.strip()
-            )
-            repository = parse_github_remote(remote)
-
-            original = record.sandbox
-            original.terminate(wait=True)
+            run_command(
+                hidden,
+                "git",
+                "push",
+                "--set-upstream",
+                "origin",
+                branch,
+                workdir=workdir,
+                env={
+                    "GIT_ASKPASS": askpass_path,
+                    "GIT_TERMINAL_PROMPT": "0",
+                },
+                timeout=10 * 60,
+            ).check()
+        finally:
             try:
-                snapshot = record.capture_exit_snapshot()
+                run_command(hidden, "rm", "-f", askpass_path).check()
             finally:
-                original.detach()
+                hidden.terminate(wait=True)
+                hidden.detach()
 
-            # Recreate the agent-visible workspace without the Git secret
-            # before starting the privileged publisher.
-            record.replace_from_snapshot(snapshot)
-
-            hidden = runner.launch_from_snapshot(
-                str(record.environment.name),
-                snapshot,
-                tags={"envy.publisher": "true"},
-                secrets=(self.git_secret,),
-            )
-            askpass_path = "/tmp/envy-git-askpass"
-            askpass = (
-                "#!/bin/sh\n"
-                'case "$1" in\n'
-                "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
-                f"  *Password*) printf '%s\\n' \"${self.git_token_env}\" ;;\n"
-                "  *) exit 1 ;;\n"
-                "esac\n"
-            )
-            try:
-                file = hidden.open(askpass_path, "w")
-                with file:
-                    file.write(askpass)
-                run_command(hidden, "chmod", "700", askpass_path).check()
-                run_command(
-                    hidden,
-                    "git",
-                    "remote",
-                    "set-url",
-                    "origin",
-                    f"https://github.com/{repository.owner}/{repository.name}.git",
-                    workdir=workdir,
-                ).check()
-                run_command(
-                    hidden,
-                    "git",
-                    "push",
-                    "--set-upstream",
-                    "origin",
-                    branch,
-                    workdir=workdir,
-                    env={
-                        "GIT_ASKPASS": askpass_path,
-                        "GIT_TERMINAL_PROMPT": "0",
-                    },
-                    timeout=10 * 60,
-                ).check()
-            finally:
-                try:
-                    run_command(hidden, "rm", "-f", askpass_path).check()
-                finally:
-                    hidden.terminate(wait=True)
-                    hidden.detach()
-
-            response = create_pull_request(
-                repository,
-                token=token,
-                head=branch,
-                base=base,
-                title=title,
-                body=body,
-                draft=draft,
-                api_url=self.github_api_url,
-            )
-            pull_request_url = response.get("html_url")
-            if not isinstance(pull_request_url, str) or not pull_request_url:
-                raise RuntimeError("GitHub did not return a pull request URL")
-            return PullRequestInfo(
-                sandbox_id=sandbox_id,
-                branch=branch,
-                commit=commit,
-                pull_request_url=pull_request_url,
-            )
-
-        return publish_pull_request
+        return PublishedBranch(repository=repository, branch=branch, commit=commit)
 
 
 def create_server(
@@ -392,27 +332,53 @@ def create_server(
     idle_timeout: int | None = 15 * 60,
     git_secret: object | None = None,
     git_token_env: str = "GITHUB_TOKEN",
-    github_api_url: str = "https://api.github.com",
+    github_mcp_url: str | None = None,
+    github_mcp_namespace: str | None = "github",
+    tool_search: bool = True,
+    tool_search_max_results: int = 5,
+    tool_search_always_visible: Sequence[str] = ("create_sandbox", "kill_sandbox"),
     workspace_store: WorkspaceStore | None = None,
     **fastmcp_settings: Any,
 ) -> FastMCP:
     """Create a FastMCP server exposing an Envy app's sandbox tools."""
+    envy_provider = EnvyProvider(
+        envy,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        git_secret=git_secret,
+        git_token_env=git_token_env,
+        workspace_store=workspace_store,
+    )
+    composed_providers: list[Provider] = [envy_provider]
+    if github_mcp_url:
+        composed_providers.append(
+            github_provider(
+                github_mcp_url,
+                token_env=git_token_env,
+                namespace=github_mcp_namespace,
+            )
+        )
+    composed_providers.extend(providers or ())
+
+    transforms: list[Transform] = list(fastmcp_settings.pop("transforms", ()))
+    transforms.insert(
+        0, WorkspacePublishTransform(envy_provider.publish_workspace_branch)
+    )
+    if tool_search:
+        from fastmcp.server.transforms.search import BM25SearchTransform
+
+        transforms.append(
+            BM25SearchTransform(
+                max_results=tool_search_max_results,
+                always_visible=list(tool_search_always_visible),
+            )
+        )
     return FastMCP(
         name=name or envy.name,
         instructions=instructions,
         auth=auth,
         middleware=middleware,
-        providers=[
-            EnvyProvider(
-                envy,
-                timeout=timeout,
-                idle_timeout=idle_timeout,
-                git_secret=git_secret,
-                git_token_env=git_token_env,
-                github_api_url=github_api_url,
-                workspace_store=workspace_store,
-            ),
-            *(providers or ()),
-        ],
+        providers=composed_providers,
+        transforms=transforms,
         **fastmcp_settings,
     )

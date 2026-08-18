@@ -65,6 +65,8 @@ Build the server from the same `Envy` object used to declare the environments:
 
 ```python
 # devboxes.py
+import os
+
 import modal
 import envy
 
@@ -86,7 +88,12 @@ control_plane_image = (
 )
 
 github_secret = modal.Secret.from_name("acme-github")
-mcp = app.mcp(git_secret=github_secret)
+mcp = app.mcp(
+    git_secret=github_secret,
+    github_mcp_url=os.getenv(
+        "GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/"
+    ),
+)
 modal_app = modal.App(app.name)
 
 
@@ -104,11 +111,16 @@ off the latency-sensitive sandbox path.
 The control-plane image is separate from the environment images: it only runs
 the MCP server, while each sandbox uses the `base` image and transforms from
 its `app.env(...)` declaration. The server builds and launches those
-environments directly and exposes `create_sandbox`, `kill_sandbox`, `bash`,
-`read`, `write`, `edit`, `glob`, and `grep`. Only sandboxes created through
-this server are accepted by the tools; ownership is checked using the reserved
-`envy.app` and `envy.env` tags. The sandbox image must provide `bash` and
-`ripgrep`; the latter is installed above for the `glob` and `grep` tools.
+environments directly and combines Envy's sandbox tools with the tools from
+the configured GitHub MCP server. Envy internally selects the complete
+`pull_requests` toolset through the `X-MCP-Toolsets` header supported by
+GitHub's remote server. The pull-request toolset includes create, list, read,
+search, reviews, comments, merge, and update operations. FastMCP's tool search
+transform keeps the catalog manageable while leaving the underlying tools
+callable. Only sandboxes created through this server are accepted by the Envy
+tools; ownership is checked using the reserved `envy.app` and `envy.env` tags.
+The sandbox image must provide `bash` and `ripgrep`; the latter is installed
+above for the `glob` and `grep` tools.
 
 ### Publishing a committed branch
 
@@ -119,16 +131,20 @@ later tool call finds that the physical sandbox has exited. See Modal's
 [exit snapshot documentation](https://modal.com/docs/guide/sandbox-exit-snapshots)
 for the feature's current limitations.
 
-To let the server push and open GitHub pull requests, the control-plane
-function above must receive a Modal Secret containing `GITHUB_TOKEN`; the same
-Secret is passed to Envy so it can be injected only into the hidden publisher.
+To let the server push branches, the control-plane function above must receive
+a Modal Secret containing `GITHUB_TOKEN`; the same Secret is passed to Envy so
+it can be injected only into the hidden publisher. When a branch-publication
+tool such as `create_pull_request` or `update_pull_request` is invoked with the
+current `sandbox_id` in MCP request metadata (`envy.sandbox_id`), Envy pushes
+the committed workspace branch first. The rest of the pull-request toolset is
+forwarded normally. Calls without that metadata are also forwarded directly,
+which is useful for already-pushed branches and remote-only GitHub operations.
 
-The `publish_pull_request` tool refuses dirty trees, detached HEADs, and
-protected branches; it never stages or commits. It terminates the canonical
-sandbox into an exit snapshot, restores the agent workspace without the Git
-Secret, and gives a separate hidden sandbox the snapshot plus the Secret for
-the push. The control plane then creates the GitHub pull request through the
-REST API. The Secret is never placed in the agent-visible sandbox.
+The publisher refuses dirty trees, detached HEADs, and protected branches; it
+never stages or commits. It terminates the canonical sandbox into an exit
+snapshot, restores the agent workspace without the Git Secret, and gives a
+separate hidden sandbox the snapshot plus the Secret for the push. The Secret
+is never placed in the agent-visible sandbox.
 
 ## Keeping images warm
 

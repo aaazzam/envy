@@ -161,20 +161,15 @@ class MCPTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.envies.stop()
 
-    def test_server_exposes_lifecycle_and_custom_tools(self) -> None:
+    def test_server_exposes_lifecycle_and_search_tools(self) -> None:
         mcp = create_server(make_envy("api"))
 
         self.assertTrue(
             {
                 "create_sandbox",
                 "kill_sandbox",
-                "publish_pull_request",
-                "bash",
-                "read",
-                "write",
-                "edit",
-                "glob",
-                "grep",
+                "search_tools",
+                "call_tool",
             }.issubset(tool_names(mcp))
         )
 
@@ -246,20 +241,14 @@ class MCPTests(unittest.TestCase):
 
         with (
             patch.object(server_module, "run_command", side_effect=command),
-            patch.object(
-                server_module,
-                "create_pull_request",
-                return_value={"html_url": "https://github.com/acme/project/pull/1"},
-            ),
             patch.dict(server_module.os.environ, {"GITHUB_TOKEN": "server-token"}),
         ):
-            result = provider._publish_pull_request()(
-                workspace_id, "Add feature", body="Details"
-            )
+            result = provider.publish_workspace_branch(workspace_id)
 
-        self.assertEqual(
-            result.pull_request_url, "https://github.com/acme/project/pull/1"
-        )
+        self.assertEqual(result.repository.owner, "acme")
+        self.assertEqual(result.repository.name, "project")
+        self.assertEqual(result.branch, "feature")
+        self.assertEqual(result.commit, "abc123")
         self.assertEqual(store.get(workspace_id)["physical_id"], "sb-canonical")
         self.assertEqual(runner.snapshot_calls[0][3], None)
         self.assertEqual(runner.snapshot_calls[1][3], ("git-secret",))

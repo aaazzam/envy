@@ -1,14 +1,20 @@
-"""Small GitHub REST helpers for the privileged MCP publisher."""
+"""GitHub MCP provider helpers."""
 
 from __future__ import annotations
 
-import json
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, cast
-from urllib.error import HTTPError, URLError
+from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+
+from fastmcp import Client
+from fastmcp.client.auth import BearerAuth
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.server.providers import ProxyProvider
+from fastmcp.server.transforms import Namespace
+
+_GITHUB_MCP_HEADERS = {
+    "X-MCP-Toolsets": "pull_requests",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,8 +23,13 @@ class GitHubRepository:
     name: str
 
 
-class _Response(Protocol):
-    def read(self) -> bytes: ...
+@dataclass(frozen=True, slots=True)
+class PublishedBranch:
+    """The branch and repository produced by a privileged workspace push."""
+
+    repository: GitHubRepository
+    branch: str
+    commit: str
 
 
 def parse_github_remote(remote: str) -> GitHubRepository:
@@ -38,59 +49,31 @@ def parse_github_remote(remote: str) -> GitHubRepository:
     return GitHubRepository(owner=parts[0], name=parts[1])
 
 
-def create_pull_request(
-    repository: GitHubRepository,
+def github_provider(
+    url: str,
     *,
-    token: str,
-    head: str,
-    base: str,
-    title: str,
-    body: str,
-    draft: bool,
-    api_url: str = "https://api.github.com",
-    opener: Callable[..., _Response] = urlopen,
-) -> dict[str, object]:
-    """Create a GitHub pull request and return its JSON response."""
-    if not token:
-        raise ValueError("the GitHub token is empty")
-    endpoint = f"{api_url.rstrip('/')}/repos/{repository.owner}/{repository.name}/pulls"
-    request = Request(
-        endpoint,
-        data=json.dumps(
-            {
-                "title": title,
-                "head": head,
-                "base": base,
-                "body": body,
-                "draft": draft,
-            }
-        ).encode("utf-8"),
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "envy-mcp",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        method="POST",
-    )
-    try:
-        response = opener(request, timeout=30)
-        raw: bytes = response.read()
-    except HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"GitHub rejected pull request creation: {detail}"
-        ) from error
-    except URLError as error:
-        raise RuntimeError(f"could not reach GitHub: {error.reason}") from error
-    try:
-        decoded: object = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError(
-            "GitHub returned an invalid pull request response"
-        ) from error
-    if not isinstance(decoded, dict):
-        raise RuntimeError("GitHub returned an unexpected pull request response")
-    payload = cast(dict[object, object], decoded)
-    return {str(key): value for key, value in payload.items()}
+    token_env: str = "GITHUB_TOKEN",
+    namespace: str | None = "github",
+) -> ProxyProvider:
+    """Create a provider backed by GitHub's official MCP server.
+
+    The returned object is a provider on the composed Envy server. Its
+    transport is proxied because GitHub's official server is a separate MCP
+    process/service; callers still see one combined Envy tool catalog.
+    """
+
+    def client_factory() -> Client[Any]:
+        import os
+
+        token = os.environ.get(token_env)
+        transport = StreamableHttpTransport(
+            url,
+            headers=dict(_GITHUB_MCP_HEADERS),
+            auth=BearerAuth(token) if token else None,
+        )
+        return Client(transport)
+
+    provider = ProxyProvider(client_factory)
+    if namespace:
+        provider.add_transform(Namespace(namespace))
+    return provider

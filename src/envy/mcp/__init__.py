@@ -5,6 +5,6 @@ Install the optional dependency group before importing this package::
     pip install 'envy[mcp]'
 """
 
-from .server import EnvyProvider, PullRequestInfo, SandboxInfo, create_server
+from .server import EnvyProvider, SandboxInfo, create_server
 
-__all__ = ["EnvyProvider", "PullRequestInfo", "SandboxInfo", "create_server"]
+__all__ = ["EnvyProvider", "SandboxInfo", "create_server"]
