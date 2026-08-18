@@ -1,8 +1,7 @@
 import unittest
 from contextlib import contextmanager
-from types import SimpleNamespace
 
-from envy.modal import Envy, ModalDeployment, ModalRunner
+from envy.modal import Envy, ModalRunner
 from envy.sandbox import Resources, SandboxSpec
 
 
@@ -49,35 +48,12 @@ class FakeModal:
         self.create_calls = []
         self.created_sandboxes = []
         self.from_id_calls = []
-        self.function_lookup_calls = []
-        self.remote_calls = []
-        self.apps = []
         self.output_enabled = 0
         self.terminate_error = None
         self.detach_error = None
         owner = self
 
-        class FakeApp:
-            def __init__(self, name):
-                self.name = name
-                self.registered_functions = {}
-                self.function_configs = {}
-
-            def function(self, **kwargs):
-                def decorate(fn):
-                    name = kwargs["name"]
-                    self.registered_functions[name] = fn
-                    self.function_configs[name] = kwargs
-                    return fn
-
-                return decorate
-
         class AppApi:
-            def __call__(self, name):
-                app = FakeApp(name)
-                owner.apps.append(app)
-                return app
-
             def lookup(self, name, **kwargs):
                 owner.lookup_calls.append((name, kwargs))
                 return "resolved-app"
@@ -100,18 +76,7 @@ class FakeModal:
                     detach_error=owner.detach_error,
                 )
 
-        class RemoteFunction:
-            def remote(self, **kwargs):
-                owner.remote_calls.append(kwargs)
-                return "sb-deployed"
-
-        class FunctionApi:
-            def from_name(self, app_name, name, **kwargs):
-                owner.function_lookup_calls.append((app_name, name, kwargs))
-                return RemoteFunction()
-
         self.App = AppApi()
-        self.Function = FunctionApi()
         self.Sandbox = SandboxApi()
 
     @contextmanager
@@ -137,8 +102,9 @@ class ModalRunnerTests(unittest.TestCase):
     def test_launch_builds_and_maps_the_spec(self):
         modal = FakeModal()
         image = FakeImage()
+        envy = Envy("envy-test")
         runner = ModalRunner(
-            "envy-test",
+            envy,
             environment_name="staging",
             timeout=3600,
             idle_timeout=600,
@@ -187,13 +153,17 @@ class ModalRunnerTests(unittest.TestCase):
         modal = FakeModal()
         image = FakeImage()
         started = []
-        env = SimpleNamespace(
-            name="api",
-            spec=lambda *, stamp: make_spec(image),
-            start=lambda sandbox: started.append(sandbox),
+        envy = Envy("envy-test")
+        env = envy.env(
+            "api",
+            base=image,
+            metadata={"team": "api", "revision": 7},
         )
+        env.on_start(lambda sandbox: started.append(sandbox))
 
-        sandbox = ModalRunner(show_output=False, _modal=modal).run(env, stamp="abc")
+        sandbox = ModalRunner(
+            envy, show_output=False, _modal=modal
+        ).run(env, stamp="abc")
 
         self.assertEqual(started, [sandbox])
         self.assertEqual(
@@ -208,23 +178,25 @@ class ModalRunnerTests(unittest.TestCase):
         def fail(_sandbox):
             raise ValueError("ready failed")
 
-        env = SimpleNamespace(
-            name="api",
-            spec=lambda *, stamp: make_spec(image),
-            start=fail,
-        )
+        envy = Envy("envy-test")
+        env = envy.env("api", base=image)
+        env.on_start(fail)
 
         with self.assertRaisesRegex(ValueError, "ready failed"):
-            ModalRunner(_modal=modal).run(env)
+            ModalRunner(envy, _modal=modal).run(env)
 
         sandbox = modal.created_sandboxes[0]
         self.assertTrue(sandbox.terminated)
         self.assertTrue(sandbox.detached)
 
-    def test_launch_invokes_a_deployed_environment(self):
+    def test_launch_builds_and_runs_a_named_environment(self):
         modal = FakeModal()
+        envy = Envy("acme-devboxes", stamp="revision-1")
+        environment = envy.env("api", base=FakeImage())
+        started = []
+        environment.on_start(lambda sandbox: started.append(sandbox))
         runner = ModalRunner(
-            "acme-devboxes",
+            envy,
             environment_name="dev",
             timeout=1800,
             idle_timeout=300,
@@ -233,41 +205,52 @@ class ModalRunnerTests(unittest.TestCase):
 
         sandbox = runner.launch("api", name="adam", tags={"branch": "main"})
 
-        self.assertEqual(sandbox.object_id, "sb-deployed")
+        self.assertEqual(sandbox.object_id, "sb-created")
         self.assertEqual(
-            modal.function_lookup_calls,
+            modal.lookup_calls,
             [
                 (
                     "acme-devboxes",
-                    "launch_api",
-                    {"environment_name": "dev"},
+                    {"create_if_missing": True, "environment_name": "dev"},
                 )
             ],
         )
         self.assertEqual(
-            modal.remote_calls,
+            modal.create_calls,
             [
                 {
+                    "app": "resolved-app",
                     "name": "adam",
-                    "tags": {"branch": "main"},
+                    "tags": {"envy.env": "api", "branch": "main"},
+                    "image": environment.spec(stamp="revision-1").image,
+                    "env": None,
+                    "secrets": None,
                     "timeout": 1800,
                     "idle_timeout": 300,
+                    "workdir": "/tmp/api",
+                    "gpu": None,
+                    "cpu": None,
+                    "memory": None,
+                    "volumes": {},
+                    "encrypted_ports": (),
                 }
             ],
         )
-        self.assertEqual(modal.from_id_calls, ["sb-deployed"])
+        self.assertEqual(started, modal.created_sandboxes)
+        self.assertEqual(modal.from_id_calls, [])
 
     def test_session_launches_new_sandbox_and_only_detaches_on_exit(self):
         modal = FakeModal()
-        environment = SimpleNamespace(name="api")
-        runner = ModalRunner("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
+        environment = envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
 
         session = runner.session(
             environment, name="adam-api", tags={"branch": "main"}
         )
 
-        self.assertEqual(session.sandbox_id, "sb-deployed")
-        self.assertEqual(modal.from_id_calls, ["sb-deployed"])
+        self.assertEqual(session.sandbox_id, "sb-created")
+        self.assertEqual(modal.from_id_calls, [])
         with session as entered:
             self.assertIs(entered, session)
             self.assertFalse(session.sandbox.terminated)
@@ -278,14 +261,15 @@ class ModalRunnerTests(unittest.TestCase):
 
     def test_session_reopens_existing_sandbox_by_id(self):
         modal = FakeModal()
-        environment = SimpleNamespace(name="api")
-        runner = ModalRunner("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
+        environment = envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
 
         session = runner.session(environment, sandbox_id="sb-existing")
 
         self.assertEqual(session.sandbox_id, "sb-existing")
         self.assertEqual(modal.from_id_calls, ["sb-existing"])
-        self.assertEqual(modal.remote_calls, [])
+        self.assertEqual(modal.create_calls, [])
 
         with session:
             pass
@@ -295,8 +279,9 @@ class ModalRunnerTests(unittest.TestCase):
 
     def test_session_reopen_rejects_creation_options(self):
         modal = FakeModal()
-        environment = SimpleNamespace(name="api")
-        runner = ModalRunner("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
+        environment = envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
 
         with self.assertRaisesRegex(
             ValueError, "cannot be used when reopening"
@@ -306,8 +291,9 @@ class ModalRunnerTests(unittest.TestCase):
     def test_session_detach_does_not_mask_body_errors(self):
         modal = FakeModal()
         modal.detach_error = RuntimeError("detach failed")
-        environment = SimpleNamespace(name="api")
-        runner = ModalRunner("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
+        environment = envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
 
         with self.assertRaisesRegex(ValueError, "body failed") as raised:
             with runner.session(environment):
@@ -318,12 +304,11 @@ class ModalRunnerTests(unittest.TestCase):
     def test_managed_run_terminates_and_detaches_after_use(self):
         modal = FakeModal()
         image = FakeImage()
-        env = SimpleNamespace(
-            name="api",
-            spec=lambda *, stamp: make_spec(image),
-            start=lambda _sandbox: None,
+        envy = Envy("envy-test")
+        env = envy.env("api", base=image)
+        runner = ModalRunner(
+            envy, show_output=False, _modal=modal
         )
-        runner = ModalRunner(show_output=False, _modal=modal)
 
         with runner.managed_run(env) as sandbox:
             self.assertFalse(sandbox.terminated)
@@ -334,7 +319,9 @@ class ModalRunnerTests(unittest.TestCase):
 
     def test_managed_launch_cleans_up_without_masking_body_error(self):
         modal = FakeModal()
-        runner = ModalRunner("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
 
         with self.assertRaisesRegex(ValueError, "body failed"):
             with runner.managed_launch("api") as sandbox:
@@ -348,14 +335,13 @@ class ModalRunnerTests(unittest.TestCase):
         modal.terminate_error = RuntimeError("terminate failed")
         modal.detach_error = RuntimeError("detach failed")
         image = FakeImage()
-        env = SimpleNamespace(
-            name="api",
-            spec=lambda *, stamp: make_spec(image),
-            start=lambda _sandbox: None,
-        )
+        envy = Envy("envy-test")
+        env = envy.env("api", base=image)
 
         with self.assertRaisesRegex(RuntimeError, "terminate failed") as raised:
-            with ModalRunner(show_output=False, _modal=modal).managed_run(env):
+            with ModalRunner(
+                envy, show_output=False, _modal=modal
+            ).managed_run(env):
                 pass
 
         self.assertIn("detach failed", " ".join(raised.exception.__notes__))
@@ -364,7 +350,9 @@ class ModalRunnerTests(unittest.TestCase):
         modal = FakeModal()
         modal.terminate_error = RuntimeError("terminate failed")
         modal.detach_error = RuntimeError("detach failed")
-        runner = ModalRunner("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
 
         with self.assertRaisesRegex(ValueError, "body failed") as raised:
             with runner.managed_launch("api"):
@@ -376,13 +364,13 @@ class ModalRunnerTests(unittest.TestCase):
 
 
 class EnvyTests(unittest.TestCase):
-    def test_deployment_requires_at_least_one_environment(self):
+    def test_launch_requires_a_registered_environment(self):
         envy = Envy("acme-devboxes")
 
-        with self.assertRaisesRegex(RuntimeError, "without environments"):
-            ModalDeployment(envy, _modal=FakeModal()).export()
+        with self.assertRaisesRegex(KeyError, "not registered"):
+            ModalRunner(envy, _modal=FakeModal()).launch("api")
 
-    def test_env_registers_a_deployable_launcher(self):
+    def test_launch_freezes_and_runs_the_declared_environment(self):
         modal = FakeModal()
         envy = Envy("acme-devboxes", stamp="revision-1")
         environment = envy.env(
@@ -396,24 +384,21 @@ class EnvyTests(unittest.TestCase):
         started = []
         environment.on_start(lambda sandbox: started.append(sandbox))
 
-        app = ModalDeployment(envy, _modal=modal).export()
-        self.assertTrue(environment.is_frozen)
-        launcher = app.registered_functions["launch_api"]
-        sandbox_id = launcher(
-            name="adam",
-            tags={"branch": "main"},
+        sandbox = ModalRunner(
+            envy,
             timeout=1800,
             idle_timeout=300,
-        )
+            _modal=modal,
+        ).launch("api", name="adam", tags={"branch": "main"})
+        self.assertTrue(environment.is_frozen)
 
         self.assertEqual(envy.environments, ("api",))
-        self.assertEqual(app.name, "acme-devboxes")
-        self.assertEqual(sandbox_id, "sb-created")
+        self.assertEqual(sandbox.object_id, "sb-created")
         self.assertEqual(started, modal.created_sandboxes)
-        self.assertTrue(modal.created_sandboxes[0].detached)
         self.assertEqual(
             modal.create_calls[0],
             {
+                "app": "resolved-app",
                 "name": "adam",
                 "tags": {
                     "team": "api",
@@ -434,19 +419,19 @@ class EnvyTests(unittest.TestCase):
             },
         )
 
-    def test_registration_closes_when_deployment_is_exported(self):
+    def test_registration_closes_when_first_launch_freezes_declaration(self):
         modal = FakeModal()
         envy = Envy("acme-devboxes")
         envy.env("api", base=FakeImage())
-        ModalDeployment(envy, _modal=modal).export()
+        ModalRunner(envy, _modal=modal).launch("api")
 
-        with self.assertRaisesRegex(RuntimeError, "after deployment export"):
+        with self.assertRaisesRegex(RuntimeError, "after declaration freeze"):
             envy.env("worker", base=FakeImage())
 
-    def test_environment_configuration_freezes_with_deployment(self):
+    def test_environment_configuration_freezes_with_first_launch(self):
         envy = Envy("acme-devboxes")
         environment = envy.env("api", base=FakeImage())
-        ModalDeployment(envy, _modal=FakeModal()).export()
+        ModalRunner(envy, _modal=FakeModal()).launch("api")
 
         with self.assertRaisesRegex(RuntimeError, "frozen"):
             environment.on_start(lambda _sandbox: None)

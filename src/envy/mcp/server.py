@@ -35,9 +35,9 @@ class SandboxInfo(BaseModel):
 class EnvyProvider(AggregateProvider):
     """Expose one :class:`envy.Envy` app as FastMCP tools.
 
-    The provider launches through Envy's deployed ``launch_<environment>``
-    functions. File and shell tools resolve only sandboxes tagged as belonging
-    to this app, so an arbitrary Modal sandbox id cannot be used as a handle.
+    The provider launches directly from the Envy declaration. File and shell
+    tools resolve only sandboxes tagged as belonging to this app, so an
+    arbitrary Modal sandbox id cannot be used as a handle.
     """
 
     def __init__(
@@ -50,7 +50,7 @@ class EnvyProvider(AggregateProvider):
     ) -> None:
         self.envy = envy
         self.runner = runner or ModalRunner(
-            envy.name, timeout=timeout, idle_timeout=idle_timeout
+            envy, timeout=timeout, idle_timeout=idle_timeout
         )
         register_envy(envy)
 
@@ -80,7 +80,7 @@ class EnvyProvider(AggregateProvider):
                 ),
             ],
         ) -> SandboxInfo:
-            """Create a sandbox for a registered, deployed environment."""
+            """Create a sandbox for a registered Envy environment."""
             env = envy.environment(environment)
             sandbox = runner.launch(environment, tags={APP_TAG: envy.name})
             sandbox_id = sandbox.object_id
