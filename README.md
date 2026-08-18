@@ -17,7 +17,7 @@ api = app.env(
     base=modal.Image.debian_slim(),
     source=envy.GitSource.github("acme/api", ref="main"),
     build=[
-        envy.apt_install("git", "curl"),
+        envy.apt_install("curl"),
         envy.pip_install("uv"),
     ],  # baked into the image
     setup=[envy.run_commands("uv sync")],  # after source, in workdir
@@ -41,6 +41,9 @@ def deps_changed(sb, changes):
 def schema_changed(sb, changes):
     sb.exec("uv", "run", "alembic", "upgrade", "head")
 ```
+
+`GitSource` automatically adds Git to the environment image before build steps
+and source checkout, so it does not need to be listed in `build`.
 
 Compose with layers — each brings its own source, steps, and rules:
 

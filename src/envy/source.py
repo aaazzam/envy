@@ -70,6 +70,11 @@ class GitSource:
     token_env: str = "GIT_TOKEN"
     token_user: str = "token"
 
+    @property
+    def requires_git(self) -> bool:
+        """Whether the environment image needs Git before this source is fetched."""
+        return True
+
     @classmethod
     def github(cls, repo: str, **kwargs: Unpack[_GitSourceOptions]) -> "GitSource":
         if not fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
@@ -169,6 +174,10 @@ class LocalSource:
     workdir: str = ""
     ignore: tuple[str, ...] = field(default=())
     secrets: tuple[object, ...] = ()
+
+    @property
+    def requires_git(self) -> bool:
+        return False
 
     def __post_init__(self) -> None:
         if not self.path:

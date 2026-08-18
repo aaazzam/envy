@@ -83,7 +83,7 @@ class ReadmeDeclarationTests(unittest.TestCase):
             "api",
             base=image,
             source=GitSource.github("acme/api", ref="main"),
-            build=[apt_install("git", "curl"), pip_install("uv")],
+            build=[apt_install("curl"), pip_install("uv")],
             setup=[run_commands("uv sync")],
             env={"ENV": "dev"},
             ports=[8000],
@@ -110,6 +110,7 @@ class ReadmeDeclarationTests(unittest.TestCase):
         self.assertEqual(
             [name for name, _args, _kwargs in image.calls],
             [
+                "apt_install",
                 "apt_install",
                 "pip_install",
                 "run_commands",
@@ -157,15 +158,17 @@ class ReadmeDeclarationTests(unittest.TestCase):
         self.assertEqual(
             [name for name, _args, _kwargs in image.calls],
             [
+                "apt_install",
                 "pip_install",
                 "run_commands",
                 "run_commands",
                 "workdir",
             ],
         )
-        self.assertEqual(image.calls[0][1], ("mkdocs",))
-        self.assertIn("acme/api", image.calls[1][1][1])
-        self.assertIn("acme/docs", image.calls[2][1][1])
+        self.assertEqual(image.calls[0][1], ("git",))
+        self.assertEqual(image.calls[1][1], ("mkdocs",))
+        self.assertIn("acme/api", image.calls[2][1][1])
+        self.assertIn("acme/docs", image.calls[3][1][1])
 
 
 @unittest.skipIf(modal is None, "Modal and MCP extras are not installed")

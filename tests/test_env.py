@@ -4,6 +4,7 @@ from pathlib import PurePosixPath
 from envy.env import Env, Layer, SyncRule
 from envy.errors import ConfigurationError, HookError, LifecycleError
 from envy.sandbox import Resources
+from envy.source import GitSource
 from envy.steps import run_commands
 
 
@@ -13,6 +14,10 @@ class FakeImage:
 
     def workdir(self, path):
         self.calls.append(("workdir", path))
+        return self
+
+    def apt_install(self, *packages):
+        self.calls.append(("apt_install", packages))
         return self
 
     def run_commands(self, *commands, secrets=()):
@@ -58,6 +63,34 @@ class FakeProcess:
 
 
 class EnvTests(unittest.TestCase):
+    def test_git_source_installs_git_before_build_and_fetch(self):
+        image = FakeImage()
+        env = Env(
+            "api",
+            base=image,
+            source=GitSource.github("acme/api", workdir="/api"),
+            build=[run_commands("build api")],
+        )
+
+        env.image(stamp="revision")
+
+        self.assertEqual(image.calls[0], ("apt_install", ("git",)))
+        self.assertEqual(image.calls[1], ("run_commands", ("build api",), ()))
+        self.assertEqual(image.calls[2][0], "run_commands")
+        self.assertIn("git clone", image.calls[2][1][1])
+
+    def test_local_source_does_not_install_git(self):
+        image = FakeImage()
+        env = Env(
+            "api",
+            base=image,
+            source=FakeSource("/api"),
+        )
+
+        env.image(stamp="revision")
+
+        self.assertNotIn(("apt_install", ("git",)), image.calls)
+
     def test_each_layer_setup_runs_in_its_source_workdir(self):
         image = FakeImage()
         env = Env(

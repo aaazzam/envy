@@ -299,6 +299,12 @@ class Env(Layer[ImageT]):
 
     def image(self, *, stamp: str = "0") -> ImageT:
         image = self._base
+        if any(
+            bool(getattr(layer.source, "requires_git", False))
+            for layer in self._layers
+            if layer.source is not None
+        ):
+            image = image.apt_install("git")
         for layer in self._layers:
             for step in layer.build_steps:
                 image = step(image)
