@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import patch
 
 try:
@@ -180,6 +181,44 @@ class MCPToolboxTests(unittest.TestCase):
             toolbox.set_envy(None)
             self.assertEqual(toolbox._envies, [])
 
+    def test_modal_workspace_store_persists_and_deletes_handles(self) -> None:
+        class DictApi:
+            calls: ClassVar[list[tuple[str, dict[str, object]]]] = []
+
+            def __init__(self) -> None:
+                self.values: dict[str, dict[str, str]] = {}
+
+            @classmethod
+            def from_name(cls, name: str, **kwargs: object) -> DictApi:
+                cls.calls.append((name, kwargs))
+                return cls()
+
+            def get(self, key: str) -> dict[str, str] | None:
+                return self.values.get(key)
+
+            def __setitem__(self, key: str, value: dict[str, str]) -> None:
+                self.values[key] = value
+
+            def __delitem__(self, key: str) -> None:
+                del self.values[key]
+
+        runner = SimpleNamespace(modal=SimpleNamespace(Dict=DictApi))
+        store = toolbox.ModalWorkspaceStore(
+            runner, name="envy-test-workspaces", environment_name="dev"
+        )
+
+        store.put("ws-1", {"physical_id": "sb-1"})
+        self.assertEqual(store.get("ws-1"), {"physical_id": "sb-1"})
+        store.delete("ws-1")
+        self.assertIsNone(store.get("ws-1"))
+        self.assertEqual(
+            DictApi.calls[-1],
+            (
+                "envy-test-workspaces",
+                {"create_if_missing": True, "environment_name": "dev"},
+            ),
+        )
+
     def test_resolve_and_require_check_sandbox_ownership(self) -> None:
         sandbox = FakeSandbox(
             tags={toolbox.APP_TAG: "test-app", toolbox.ENV_TAG: "api"}
@@ -205,6 +244,66 @@ class MCPToolboxTests(unittest.TestCase):
             ):
                 with self.assertRaises(NotOurSandboxError):
                     toolbox.resolve_sandbox("sb-1")
+
+    def test_resolve_replaces_an_exited_logical_workspace(self) -> None:
+        class ExitedSandbox(FakeSandbox):
+            def poll(self) -> int:
+                return 0
+
+            def _experimental_get_exit_snapshot(self, *, timeout: float) -> str:
+                self.snapshot_timeout = timeout
+                return "snapshot-image"
+
+        class RestoreRunner:
+            def __init__(self, replacement: FakeSandbox) -> None:
+                self.replacement = replacement
+                self.calls = []
+
+            def launch_from_snapshot(
+                self,
+                environment: str,
+                snapshot: object,
+                *,
+                tags: dict[str, str] | None = None,
+                secrets: object = None,
+            ) -> FakeSandbox:
+                self.calls.append((environment, snapshot, tags, secrets))
+                return self.replacement
+
+        envy = make_envy("api")
+        original = ExitedSandbox(
+            tags={toolbox.APP_TAG: envy.name, toolbox.ENV_TAG: "api"}
+        )
+        original.object_id = "sb-old"
+        replacement = FakeSandbox(
+            tags={toolbox.APP_TAG: envy.name, toolbox.ENV_TAG: "api"}
+        )
+        replacement.object_id = "sb-replacement"
+        runner = RestoreRunner(replacement)
+        store = toolbox.InMemoryWorkspaceStore()
+        with patch.multiple(
+            toolbox,
+            _envies=[envy],
+            _workspaces={},
+            _workspace_stores={},
+            _workspace_runners={},
+        ):
+            toolbox.register_workspace_runtime(envy, runner, store)
+            toolbox.register_workspace(
+                "ws-1",
+                sandbox=original,
+                envy=envy,
+                environment=envy.environment("api"),
+                runner=runner,
+                store=store,
+                tags={toolbox.APP_TAG: envy.name, toolbox.ENV_TAG: "api"},
+            )
+
+            owned = toolbox.resolve_sandbox("ws-1")
+
+        self.assertIs(owned.sandbox, replacement)
+        self.assertEqual(runner.calls[0][0:2], ("api", "snapshot-image"))
+        self.assertEqual(store.get("ws-1")["physical_id"], "sb-replacement")
 
     def test_run_command_captures_streams_and_timeout(self) -> None:
         sandbox = FakeSandbox(process=FakeProcess(stdout="out", stderr="err"))
