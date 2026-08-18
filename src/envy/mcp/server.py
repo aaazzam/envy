@@ -86,7 +86,6 @@ class EnvyProvider(AggregateProvider):
         timeout: int = 60 * 60,
         idle_timeout: int | None = 15 * 60,
         runner: ModalRunner | None = None,
-        modal_app: object | None = None,
         workspace_store: WorkspaceStore | None = None,
         git_secret: object | None = None,
         git_token_env: str = "GITHUB_TOKEN",
@@ -95,10 +94,7 @@ class EnvyProvider(AggregateProvider):
             raise ValueError("git_token_env must be a valid environment variable name")
         self.envy = envy
         self.runner = runner or ModalRunner(
-            envy,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            modal_app=modal_app,
+            envy, timeout=timeout, idle_timeout=idle_timeout
         )
         self.workspace_store = workspace_store or ModalWorkspaceStore(
             self.runner,
@@ -334,7 +330,6 @@ def create_server(
     providers: Sequence[Provider] | None = None,
     timeout: int = 60 * 60,
     idle_timeout: int | None = 15 * 60,
-    modal_app: object | None = None,
     git_secret: object | None = None,
     git_token_env: str = "GITHUB_TOKEN",
     github_mcp_url: str | None = None,
@@ -350,7 +345,6 @@ def create_server(
         envy,
         timeout=timeout,
         idle_timeout=idle_timeout,
-        modal_app=modal_app,
         git_secret=git_secret,
         git_token_env=git_token_env,
         workspace_store=workspace_store,

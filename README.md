@@ -88,14 +88,13 @@ control_plane_image = (
 )
 
 github_secret = modal.Secret.from_name("acme-github")
-modal_app = modal.App(app.name)
 mcp = app.mcp(
     git_secret=github_secret,
-    modal_app=modal_app,
     github_mcp_url=os.getenv(
         "GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/"
     ),
 )
+modal_app = modal.App(app.name)
 
 
 @modal_app.function(image=control_plane_image, secrets=[github_secret])
@@ -149,15 +148,15 @@ is never placed in the agent-visible sandbox.
 
 ## Keeping images warm
 
-When `ModalRunner` is bound to a `modal.App`—as it is through the MCP setup
-above—Envy automatically registers an `envy-rebake` Modal cron that rebakes all
-environments every 30 minutes. No extra schedule registration is required.
-
-To add a private manual endpoint as well:
+Register a scheduled rebake and a private manual endpoint on the same Modal app:
 
 ```python
 runner = envy.ModalRunner(app, modal_app=modal_app)
 
+runner.install_rebake_schedule(
+    modal_app,
+    cron="*/30 * * * *",
+)
 runner.install_rebake_endpoint(
     modal_app,
     token_secret="acme-devbox-rebake-token",

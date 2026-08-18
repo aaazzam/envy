@@ -284,8 +284,6 @@ class ModalRunner:
         self.idle_timeout = idle_timeout
         self._modal_module = _modal
         self._resolved_app: modal.App | None = cast("modal.App | None", modal_app)
-        if modal_app is not None:
-            self.install_rebake_schedule(modal_app)
 
     @property
     def modal(self) -> _ModalApi:
@@ -393,16 +391,6 @@ class ModalRunner:
         """Register a Modal cron function that rebakes all environments."""
         import modal
 
-        raw_schedules = getattr(modal_app, "_envy_rebake_schedules", None)
-        if isinstance(raw_schedules, dict):
-            schedules = cast(dict[str, Any], raw_schedules)
-        else:
-            schedules: dict[str, Any] = {}
-            modal_app._envy_rebake_schedules = schedules
-        existing = schedules.get(name)
-        if existing is not None:
-            return existing
-
         runner = self
 
         @modal_app.function(
@@ -414,7 +402,6 @@ class ModalRunner:
         def rebake() -> dict[str, str]:
             return runner.rebake()
 
-        schedules[name] = rebake
         return rebake
 
     def install_rebake_endpoint(

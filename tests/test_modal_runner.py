@@ -273,33 +273,6 @@ class ModalRunnerTests(unittest.TestCase):
         ) as rebake_mock:
             self.assertEqual(rebake(), {"api": "image-id"})
         rebake_mock.assert_called_once_with()
-        self.assertIs(runner.install_rebake_schedule(modal_app), rebake)
-
-    def test_modal_app_binding_registers_default_rebake_cron(self):
-        modal = FakeModal()
-        envy = Envy("acme-devboxes")
-        envy.env("api", base=FakeImage())
-
-        class FakeModalApp:
-            def __init__(self):
-                self.function_options = None
-
-            def function(self, **kwargs):
-                self.function_options = kwargs
-
-                def decorate(fn):
-                    return fn
-
-                return decorate
-
-        modal_app = FakeModalApp()
-        ModalRunner(envy, show_output=False, modal_app=modal_app, _modal=modal)
-
-        self.assertEqual(modal_app.function_options["name"], "envy-rebake")
-        self.assertEqual(
-            modal_app.function_options["schedule"].proto_message.cron.cron_string,
-            "*/30 * * * *",
-        )
 
     def test_install_rebake_endpoint_configures_auth_and_supports_one_or_all(self):
         import modal
