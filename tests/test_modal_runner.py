@@ -2,8 +2,8 @@ import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from boxen.modal import Boxen, ModalRunner
-from boxen.sandbox import Resources, SandboxSpec
+from envy.modal import Envy, ModalRunner
+from envy.sandbox import Resources, SandboxSpec
 
 
 class FakeImage:
@@ -138,7 +138,7 @@ class ModalRunnerTests(unittest.TestCase):
         modal = FakeModal()
         image = FakeImage()
         runner = ModalRunner(
-            "boxen-test",
+            "envy-test",
             environment_name="staging",
             timeout=3600,
             idle_timeout=600,
@@ -156,7 +156,7 @@ class ModalRunnerTests(unittest.TestCase):
             modal.lookup_calls,
             [
                 (
-                    "boxen-test",
+                    "envy-test",
                     {"create_if_missing": True, "environment_name": "staging"},
                 )
             ],
@@ -198,7 +198,7 @@ class ModalRunnerTests(unittest.TestCase):
         self.assertEqual(started, [sandbox])
         self.assertEqual(
             modal.create_calls[0]["tags"],
-            {"team": "api", "revision": "7", "boxen.env": "api"},
+            {"team": "api", "revision": "7", "envy.env": "api"},
         )
 
     def test_run_cleans_up_when_a_ready_hook_fails(self):
@@ -256,6 +256,64 @@ class ModalRunnerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(modal.from_id_calls, ["sb-deployed"])
+
+    def test_session_launches_new_sandbox_and_only_detaches_on_exit(self):
+        modal = FakeModal()
+        environment = SimpleNamespace(name="api")
+        runner = ModalRunner("acme-devboxes", _modal=modal)
+
+        session = runner.session(
+            environment, name="adam-api", tags={"branch": "main"}
+        )
+
+        self.assertEqual(session.sandbox_id, "sb-deployed")
+        self.assertEqual(modal.from_id_calls, ["sb-deployed"])
+        with session as entered:
+            self.assertIs(entered, session)
+            self.assertFalse(session.sandbox.terminated)
+            self.assertFalse(session.sandbox.detached)
+
+        self.assertFalse(session.sandbox.terminated)
+        self.assertTrue(session.sandbox.detached)
+
+    def test_session_reopens_existing_sandbox_by_id(self):
+        modal = FakeModal()
+        environment = SimpleNamespace(name="api")
+        runner = ModalRunner("acme-devboxes", _modal=modal)
+
+        session = runner.session(environment, sandbox_id="sb-existing")
+
+        self.assertEqual(session.sandbox_id, "sb-existing")
+        self.assertEqual(modal.from_id_calls, ["sb-existing"])
+        self.assertEqual(modal.remote_calls, [])
+
+        with session:
+            pass
+
+        self.assertTrue(session.sandbox.detached)
+        self.assertFalse(session.sandbox.terminated)
+
+    def test_session_reopen_rejects_creation_options(self):
+        modal = FakeModal()
+        environment = SimpleNamespace(name="api")
+        runner = ModalRunner("acme-devboxes", _modal=modal)
+
+        with self.assertRaisesRegex(
+            ValueError, "cannot be used when reopening"
+        ):
+            runner.session(environment, sandbox_id="sb-existing", name="adam-api")
+
+    def test_session_detach_does_not_mask_body_errors(self):
+        modal = FakeModal()
+        modal.detach_error = RuntimeError("detach failed")
+        environment = SimpleNamespace(name="api")
+        runner = ModalRunner("acme-devboxes", _modal=modal)
+
+        with self.assertRaisesRegex(ValueError, "body failed") as raised:
+            with runner.session(environment):
+                raise ValueError("body failed")
+
+        self.assertIn("detach failed", " ".join(raised.exception.__notes__))
 
     def test_managed_run_terminates_and_detaches_after_use(self):
         modal = FakeModal()
@@ -317,17 +375,17 @@ class ModalRunnerTests(unittest.TestCase):
         self.assertIn("detach failed", notes)
 
 
-class BoxenTests(unittest.TestCase):
+class EnvyTests(unittest.TestCase):
     def test_app_requires_at_least_one_environment(self):
-        boxen = Boxen("acme-devboxes", _modal=FakeModal())
+        envy = Envy("acme-devboxes", _modal=FakeModal())
 
         with self.assertRaisesRegex(RuntimeError, "without environments"):
-            _ = boxen.app
+            _ = envy.app
 
     def test_env_registers_a_deployable_launcher(self):
         modal = FakeModal()
-        boxen = Boxen("acme-devboxes", stamp="revision-1", _modal=modal)
-        environment = boxen.env(
+        envy = Envy("acme-devboxes", stamp="revision-1", _modal=modal)
+        environment = envy.env(
             "api",
             base=FakeImage(),
             env={"MODE": "dev"},
@@ -338,7 +396,7 @@ class BoxenTests(unittest.TestCase):
         started = []
         environment.on_start(lambda sandbox: started.append(sandbox))
 
-        app = boxen.app
+        app = envy.app
         self.assertTrue(environment.is_frozen)
         launcher = app.registered_functions["launch_api"]
         sandbox_id = launcher(
@@ -348,7 +406,7 @@ class BoxenTests(unittest.TestCase):
             idle_timeout=300,
         )
 
-        self.assertEqual(boxen.environments, ("api",))
+        self.assertEqual(envy.environments, ("api",))
         self.assertEqual(app.name, "acme-devboxes")
         self.assertEqual(sandbox_id, "sb-created")
         self.assertEqual(started, modal.created_sandboxes)
@@ -359,7 +417,7 @@ class BoxenTests(unittest.TestCase):
                 "name": "adam",
                 "tags": {
                     "team": "api",
-                    "boxen.env": "api",
+                    "envy.env": "api",
                     "branch": "main",
                 },
                 "image": environment.spec(stamp="revision-1").image,
@@ -378,27 +436,27 @@ class BoxenTests(unittest.TestCase):
 
     def test_registration_closes_when_app_is_materialized(self):
         modal = FakeModal()
-        boxen = Boxen("acme-devboxes", _modal=modal)
-        boxen.env("api", base=FakeImage())
-        _ = boxen.app
+        envy = Envy("acme-devboxes", _modal=modal)
+        envy.env("api", base=FakeImage())
+        _ = envy.app
 
-        with self.assertRaisesRegex(RuntimeError, "after boxen.app"):
-            boxen.env("worker", base=FakeImage())
+        with self.assertRaisesRegex(RuntimeError, "after envy.app"):
+            envy.env("worker", base=FakeImage())
 
     def test_environment_configuration_freezes_with_app(self):
-        boxen = Boxen("acme-devboxes", _modal=FakeModal())
-        environment = boxen.env("api", base=FakeImage())
-        _ = boxen.app
+        envy = Envy("acme-devboxes", _modal=FakeModal())
+        environment = envy.env("api", base=FakeImage())
+        _ = envy.app
 
         with self.assertRaisesRegex(RuntimeError, "frozen"):
             environment.on_start(lambda _sandbox: None)
 
     def test_duplicate_environment_names_are_rejected(self):
-        boxen = Boxen("acme-devboxes", _modal=FakeModal())
-        boxen.env("api", base=FakeImage())
+        envy = Envy("acme-devboxes", _modal=FakeModal())
+        envy.env("api", base=FakeImage())
 
         with self.assertRaisesRegex(ValueError, "already registered"):
-            boxen.env("api", base=FakeImage())
+            envy.env("api", base=FakeImage())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import unittest
 
-from boxen.steps import (
+from envy.steps import (
     add_local_dir,
     add_local_file,
     apt_install,

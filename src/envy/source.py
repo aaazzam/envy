@@ -117,7 +117,7 @@ class GitSource:
         if self.submodules:
             clone += ["--recurse-submodules"]
         clone += ["--", self.url, self.workdir]
-        commands = [shell_join(["echo", f"boxen source stamp: {stamp}"])]
+        commands = [shell_join(["echo", f"envy source stamp: {stamp}"])]
         if self.secrets:
             commands.append(self.credential_helper)
         commands.append(shell_join(clone))
@@ -190,7 +190,7 @@ class LocalSource:
     @property
     def _manifest_path(self) -> str:
         source_id = sha256(self.workdir.encode()).hexdigest()[:16]
-        return f"/tmp/.boxen/manifests/{source_id}.json"
+        return f"/tmp/.envy/manifests/{source_id}.json"
 
     def fetch(self, image: ImageT, *, stamp: str) -> ImageT:
         del stamp
@@ -209,7 +209,7 @@ class LocalSource:
                 "sh",
                 "-c",
                 script,
-                "boxen-local-source",
+                "envy-local-source",
                 manifest_parent,
                 manifest_json,
                 self._manifest_path,
@@ -295,7 +295,7 @@ class LocalSource:
         except Exception as exc:
             raise SourceRefreshUnsupported(
                 "LocalSource cannot refresh this sandbox because its build manifest "
-                "is missing; rebuild the environment with the current Boxen version"
+                "is missing; rebuild the environment with the current Envy version"
             ) from exc
         try:
             decoded_object: object = loads(raw_manifest)

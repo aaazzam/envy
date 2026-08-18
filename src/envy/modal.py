@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from re import fullmatch
-from typing import TYPE_CHECKING, Protocol, cast, final
+from typing import TYPE_CHECKING, Generic, Protocol, cast, final
 
 from .env import Env
 from .errors import ConfigurationError, LifecycleError
@@ -122,8 +122,45 @@ def _managed_sandbox(
         _cleanup_sandbox(sandbox)
 
 
+def _detach_sandbox(
+    sandbox: modal.Sandbox, error: BaseException | None = None
+) -> None:
+    try:
+        sandbox.detach()
+    except Exception as detach_error:
+        if error is not None:
+            error.add_note(f"Modal Sandbox detach failed: {detach_error}")
+            return
+        raise
+
+
 @final
-class Boxen:
+class ModalSession(Generic[ImageT], AbstractContextManager["ModalSession[ImageT]"]):
+    """An environment declaration paired with an attached Modal Sandbox."""
+
+    def __init__(self, environment: Env[ImageT], sandbox: modal.Sandbox) -> None:
+        self.environment = environment
+        self.sandbox = sandbox
+
+    @property
+    def sandbox_id(self) -> str:
+        return self.sandbox.object_id
+
+    def __enter__(self) -> ModalSession[ImageT]:
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        _traceback: object | None,
+    ) -> bool | None:
+        _detach_sandbox(self.sandbox, exc_value)
+        return False
+
+
+@final
+class Envy:
     """A collection of environments compiled into one deployable Modal App."""
 
     def __init__(
@@ -135,7 +172,7 @@ class Boxen:
         _modal: _ModalApi | None = None,
     ) -> None:
         if not name:
-            raise ValueError("Boxen requires a non-empty app name")
+            raise ValueError("Envy requires a non-empty app name")
         self.name = name
         self.stamp = stamp
         self.launch_timeout = launch_timeout
@@ -150,7 +187,7 @@ class Boxen:
                 import modal as modal_module
             except ImportError as exc:
                 raise RuntimeError(
-                    "Boxen deployment requires the Modal SDK; install boxen[modal]"
+                    "Envy deployment requires the Modal SDK; install envy[modal]"
                 ) from exc
             module_object: object = modal_module
             self._modal_module = cast(  # pyright: ignore[reportInvalidCast]
@@ -197,7 +234,7 @@ class Boxen:
     def register(self, environment: Env[ImageT]) -> Env[ImageT]:
         if self._app is not None:
             raise LifecycleError(
-                "cannot register an environment after boxen.app is created"
+                "cannot register an environment after envy.app is created"
             )
         name = str(environment.name)
         if not name:
@@ -215,7 +252,7 @@ class Boxen:
     def app(self) -> modal.App:
         if self._app is None:
             if not self._environments:
-                raise RuntimeError("cannot create boxen.app without environments")
+                raise RuntimeError("cannot create envy.app without environments")
             app = self.modal.App(self.name)
             for environment_object in self._environments.values():
                 environment = cast(_EnvApi, environment_object)
@@ -245,7 +282,7 @@ class Boxen:
             idle_timeout: int | None = None,
         ) -> str:
             sandbox_tags = {key: str(value) for key, value in spec.metadata.items()}
-            sandbox_tags["boxen.env"] = environment_name
+            sandbox_tags["envy.env"] = environment_name
             sandbox_tags.update(tags or {})
             sandbox = modal_api.Sandbox.create(
                 name=name,
@@ -280,11 +317,11 @@ class Boxen:
 
 @final
 class ModalRunner:
-    """Build and run Boxen environments on Modal Sandboxes."""
+    """Build and run Envy environments on Modal Sandboxes."""
 
     def __init__(
         self,
-        app: str | modal.App = "boxen",
+        app: str | modal.App = "envy",
         *,
         environment_name: str | None = None,
         show_output: bool = True,
@@ -307,7 +344,7 @@ class ModalRunner:
                 import modal as modal_module
             except ImportError as exc:
                 raise RuntimeError(
-                    "ModalRunner requires the Modal SDK; install boxen[modal]"
+                    "ModalRunner requires the Modal SDK; install envy[modal]"
                 ) from exc
             module_object: object = modal_module
             self._modal_module = cast(  # pyright: ignore[reportInvalidCast]
@@ -345,7 +382,7 @@ class ModalRunner:
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> modal.Sandbox:
-        """Launch an environment registered in a deployed Boxen App."""
+        """Launch an environment registered in a deployed Envy App."""
         if not isinstance(self._app_ref, str):
             raise TypeError("deployed launches require a Modal App name")
         launcher = self.modal.Function.from_name(
@@ -360,7 +397,7 @@ class ModalRunner:
             idle_timeout=self.idle_timeout,
         )
         if not isinstance(sandbox_id, str):
-            raise TypeError("deployed Boxen launcher returned an invalid Sandbox id")
+            raise TypeError("deployed Envy launcher returned an invalid Sandbox id")
         return self.modal.Sandbox.from_id(sandbox_id)
 
     def launch_spec(
@@ -404,6 +441,34 @@ class ModalRunner:
         """Launch a deployed environment and always terminate and detach it."""
         return _managed_sandbox(self.launch(environment, name=name, tags=tags))
 
+    def session(
+        self,
+        env: Env[ImageT],
+        *,
+        sandbox_id: str | None = None,
+        name: str | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> ModalSession[ImageT]:
+        """Open a new or existing deployed sandbox for ``env``.
+
+        When ``sandbox_id`` is omitted, the environment's deployed launcher
+        creates a new sandbox. Otherwise, the existing Modal Sandbox is
+        reopened by ID. Exiting the session detaches the local handle but does
+        not terminate the remote sandbox. Refreshing remains explicit through
+        ``env.refresh(session.sandbox)``.
+        """
+        if sandbox_id is None:
+            if env.name is None:
+                raise ValueError("sessions require a named environment")
+            sandbox = self.launch(str(env.name), name=name, tags=tags)
+        else:
+            if name is not None or tags is not None:
+                raise ValueError(
+                    "name and tags cannot be used when reopening a sandbox"
+                )
+            sandbox = self.modal.Sandbox.from_id(sandbox_id)
+        return ModalSession(env, sandbox)
+
     def run(
         self,
         env: Env[ImageT],
@@ -414,7 +479,7 @@ class ModalRunner:
     ) -> modal.Sandbox:
         """Compile, build, launch, and run the ready hooks for an environment."""
         spec = env.spec(stamp=stamp)
-        env_tags = {"boxen.env": str(env.name)}
+        env_tags = {"envy.env": str(env.name)}
         env_tags.update(tags or {})
         sandbox = self.launch_spec(spec, name=name, tags=env_tags)
         try:

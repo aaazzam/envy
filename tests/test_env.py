@@ -1,10 +1,10 @@
 import unittest
 from pathlib import PurePosixPath
 
-from boxen.env import Env, Layer, SyncRule
-from boxen.errors import ConfigurationError, HookError, LifecycleError
-from boxen.sandbox import Resources
-from boxen.steps import run_commands
+from envy.env import Env, Layer, SyncRule
+from envy.errors import ConfigurationError, HookError, LifecycleError
+from envy.sandbox import Resources
+from envy.steps import run_commands
 
 
 class FakeImage:

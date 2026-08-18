@@ -4,12 +4,12 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from boxen.errors import (
+from envy.errors import (
     ConfigurationError,
     SourceCommandError,
     SourceRefreshUnsupported,
 )
-from boxen.source import GitSource, LocalSource
+from envy.source import GitSource, LocalSource
 
 
 class FakeImage:
@@ -237,7 +237,7 @@ class GitSourceTests(unittest.TestCase):
         self.assertEqual(kwargs, {})
         self.assertEqual(
             shlex.split(commands[0]),
-            ["echo", "boxen source stamp: x'; echo stamp-injected; '"],
+            ["echo", "envy source stamp: x'; echo stamp-injected; '"],
         )
         self.assertEqual(
             shlex.split(commands[1]),
@@ -280,14 +280,14 @@ class GitSourceTests(unittest.TestCase):
             [
                 FakeProcess(stdout="abc123\n"),
                 FakeProcess(),
-                FakeProcess(stdout="pyproject.toml\nsrc/boxen/env.py\n"),
+                FakeProcess(stdout="pyproject.toml\nsrc/envy/env.py\n"),
             ]
         )
 
         changed = GitSource.github("acme/api").pull(sandbox)
 
         self.assertEqual(
-            tuple(map(str, changed)), ("pyproject.toml", "src/boxen/env.py")
+            tuple(map(str, changed)), ("pyproject.toml", "src/envy/env.py")
         )
         self.assertEqual(sandbox.commands[1][-2:], ("pull", "--ff-only"))
 

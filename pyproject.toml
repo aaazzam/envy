@@ -1,5 +1,5 @@
 [project]
-name = "boxen"
+name = "envy"
 version = "0.1.0"
 description = "Declarative, composable development environments for remote sandboxes"
 readme = "README.md"
@@ -45,7 +45,7 @@ typeCheckingMode = "strict"
 
 [tool.coverage.run]
 branch = true
-source = ["boxen"]
+source = ["envy"]
 
 [tool.coverage.report]
 fail_under = 90

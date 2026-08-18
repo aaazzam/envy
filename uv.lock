@@ -181,7 +181,7 @@ wheels = [
 ]
 
 [[package]]
-name = "boxen"
+name = "envy"
 version = "0.1.0"
 source = { editable = "." }
 

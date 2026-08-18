@@ -5,7 +5,7 @@ try:
 except ImportError:  # The Modal backend is optional.
     modal = None
 
-from boxen import Env, apt_install, run_commands
+from envy import Env, apt_install, run_commands
 
 
 @unittest.skipIf(modal is None, "Modal extra is not installed")

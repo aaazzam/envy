@@ -4,7 +4,7 @@ from typing import Any, Protocol, Self, TypeAlias, TypeVar
 
 
 class Image(Protocol):
-    """Backend image operations used by Boxen transforms."""
+    """Backend image operations used by Envy transforms."""
 
     def pip_install(self, *packages: str) -> Self: ...
     def apt_install(self, *packages: str) -> Self: ...

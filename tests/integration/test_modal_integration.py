@@ -9,12 +9,12 @@ try:
 except ImportError:  # The Modal backend is optional.
     modal = None
 
-from boxen import Env, LocalSource, ModalRunner
+from envy import Env, LocalSource, ModalRunner
 
 
 @unittest.skipUnless(
-    modal is not None and os.environ.get("BOXEN_RUN_MODAL_INTEGRATION") == "1",
-    "set BOXEN_RUN_MODAL_INTEGRATION=1 with a configured Modal profile",
+    modal is not None and os.environ.get("ENVY_RUN_MODAL_INTEGRATION") == "1",
+    "set ENVY_RUN_MODAL_INTEGRATION=1 with a configured Modal profile",
 )
 class ModalIntegrationTests(unittest.TestCase):
     def test_local_refresh_and_managed_cleanup_against_modal(self):
@@ -37,10 +37,10 @@ class ModalIntegrationTests(unittest.TestCase):
                 lambda _sandbox, changes: routed.extend(changes.matched)
             )
 
-            app = modal.App("boxen-integration")
+            app = modal.App("envy-integration")
             with app.run():
                 runner = ModalRunner(app, timeout=300)
-                name = f"boxen-integration-{uuid4().hex[:8]}"
+                name = f"envy-integration-{uuid4().hex[:8]}"
                 with runner.managed_run(environment, name=name) as sandbox:
                     initial = sandbox.exec("cat", "/workspace/message.txt")
                     self.assertEqual(initial.wait(), 0)

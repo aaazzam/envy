@@ -1,19 +1,19 @@
 from collections.abc import Sequence
 
 
-class BoxenError(Exception):
-    """Base class for errors raised by Boxen."""
+class EnvyError(Exception):
+    """Base class for errors raised by Envy."""
 
 
-class ConfigurationError(BoxenError, ValueError):
+class ConfigurationError(EnvyError, ValueError):
     """Raised when an environment declaration is invalid."""
 
 
-class LifecycleError(BoxenError, RuntimeError):
+class LifecycleError(EnvyError, RuntimeError):
     """Raised when an operation violates the environment lifecycle."""
 
 
-class SourceError(BoxenError, RuntimeError):
+class SourceError(EnvyError, RuntimeError):
     """Base class for source acquisition and refresh failures."""
 
 
@@ -46,5 +46,5 @@ class SourceCommandError(SourceError):
         super().__init__(message)
 
 
-class HookError(BoxenError, RuntimeError):
+class HookError(EnvyError, RuntimeError):
     """Raised when a lifecycle hook fails."""

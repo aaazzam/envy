@@ -1,4 +1,4 @@
-# boxen
+# envy
 
 Declarative devboxes. Define an environment once — image, source, sync rules,
 lifecycle — and get a sandbox spec out. Environment compilation is
@@ -8,19 +8,19 @@ backend-agnostic; deployment and launch integration currently targets Modal.
 
 ```python
 import modal
-import boxen as bx
+import envy
 
-boxen = bx.Boxen("acme-devboxes", stamp="git-commit-or-release-id")
+app = envy.Envy("acme-devboxes", stamp="git-commit-or-release-id")
 
-api = boxen.env(
+api = app.env(
     "api",
     base=modal.Image.debian_slim(),
-    source=bx.GitSource.github("acme/api", ref="main"),
-    build=[bx.apt_install("git", "curl"), bx.pip_install("uv")],  # baked into the image
-    setup=[bx.run_commands("uv sync")],  # after source, in workdir
+    source=envy.GitSource.github("acme/api", ref="main"),
+    build=[envy.apt_install("git", "curl"), envy.pip_install("uv")],  # baked into the image
+    setup=[envy.run_commands("uv sync")],  # after source, in workdir
     env={"ENV": "dev"},
     ports=[8000],
-    resources=bx.Resources(cpu=2, memory=4096),
+    resources=envy.Resources(cpu=2, memory=4096),
 )
 
 
@@ -42,13 +42,13 @@ def schema_changed(sb, changes):
 Compose with layers — each brings its own source, steps, and rules:
 
 ```python
-docs = bx.Layer(
-    "docs", source=bx.GitSource.github("acme/docs"), build=[bx.pip_install("mkdocs")]
+docs = envy.Layer(
+    "docs", source=envy.GitSource.github("acme/docs"), build=[envy.pip_install("mkdocs")]
 )
 api.include(docs)
 
 # Exporting the app freezes every environment, layer, rule, and hook.
-app = boxen.app
+modal_app = app.app
 ```
 
 Deploy the complete app. Modal builds every registered environment image before
@@ -61,12 +61,19 @@ modal deploy devboxes.py
 ## Launching it
 
 ```python
-runner = bx.ModalRunner("acme-devboxes", timeout=60 * 60, idle_timeout=15 * 60)
-with runner.managed_launch("api") as sb:
-    api.refresh(sb)
+runner = envy.ModalRunner("acme-devboxes", timeout=60 * 60, idle_timeout=15 * 60)
+with runner.session(api) as session:
+    api.refresh(session.sandbox)
+
+# Reopen the same sandbox later with its persisted ID.
+with runner.session(api, sandbox_id=session.sandbox_id) as session:
+    api.refresh(session.sandbox)
 ```
 
-Install the Modal backend with `pip install 'boxen[modal]'`. For local iteration
+Sessions detach their local handle on exit without terminating the remote
+sandbox, so persist `session.sandbox_id` when it should be reopened later.
+
+Install the Modal backend with `pip install 'envy[modal]'`. For local iteration
 without a deployment, `runner.run(api)` still provides the imperative
 compile-build-launch path.
 

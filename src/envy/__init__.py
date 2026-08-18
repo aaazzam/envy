@@ -1,7 +1,7 @@
 from .env import Changes, Env, Layer, SyncRule
 from .errors import (
-    BoxenError,
     ConfigurationError,
+    EnvyError,
     HookError,
     LifecycleError,
     SourceCommandError,
@@ -9,7 +9,7 @@ from .errors import (
     SourceRefreshUnsupported,
 )
 from .image import Image, ImageTransform, apply_transform
-from .modal import Boxen, ModalRunner
+from .modal import Envy, ModalRunner, ModalSession
 from .sandbox import Resources, Sandbox, SandboxSpec
 from .source import GitSource, LocalSource, Source
 from .steps import (
@@ -25,11 +25,11 @@ from .steps import (
 )
 
 __all__ = [
-    "Boxen",
-    "BoxenError",
     "Changes",
     "ConfigurationError",
     "Env",
+    "Envy",
+    "EnvyError",
     "GitSource",
     "HookError",
     "Image",
@@ -38,6 +38,7 @@ __all__ = [
     "LifecycleError",
     "LocalSource",
     "ModalRunner",
+    "ModalSession",
     "Resources",
     "Sandbox",
     "SandboxSpec",
