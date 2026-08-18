@@ -55,15 +55,27 @@ api.include(docs)
 
 ## Exposing environments over MCP
 
-Install the optional MCP integration with `uv add 'envy[mcp]'`. Build the
-server from the same `Envy` object used to declare the environments:
+Install the optional MCP integration with `uv add 'envy[mcp]'`. Envy supports
+FastMCP 3.x and 4.x. FastMCP 4 is currently a prerelease; use
+`uv add --prerelease=allow 'fastmcp==4.0.0b3'` when you want to test that line.
+Build the server from the same `Envy` object used to declare the environments:
 
 ```python
+# devboxes.py
 import modal
 import envy
 
 app = envy.Envy("acme-devboxes")
 api = app.env("api", base=modal.Image.debian_slim())
+
+# The MCP control plane needs its own image. It must include the MCP
+# dependencies and this module, because the server builds environments from
+# the declaration at runtime.
+control_plane_image = (
+    modal.Image.debian_slim()
+    .pip_install("envy[mcp]")
+    .add_local_python_source("devboxes", copy=True)
+)
 
 mcp = app.mcp()
 modal_app = modal.App(app.name)
@@ -80,12 +92,13 @@ rebake, Envy builds an environment inline. After that, sandbox creation uses
 the latest image ID recorded in a persistent Modal Dict, so image builds stay
 off the latency-sensitive sandbox path.
 
-`control_plane_image` must contain the MCP dependencies and the module that
-declares `app`. The MCP server builds and launches environments directly from
-the Envy declaration and exposes `create_sandbox`, `kill_sandbox`, `bash`,
-`read`, `write`, `edit`, `glob`, and `grep`.
-Only sandboxes created through this server are accepted by the tools; ownership
-is checked using the reserved `envy.app` and `envy.env` tags.
+The control-plane image is separate from the environment images: it only runs
+the MCP server, while each sandbox uses the `base` image and transforms from
+its `app.env(...)` declaration. The server builds and launches those
+environments directly and exposes `create_sandbox`, `kill_sandbox`, `bash`,
+`read`, `write`, `edit`, `glob`, and `grep`. Only sandboxes created through
+this server are accepted by the tools; ownership is checked using the reserved
+`envy.app` and `envy.env` tags.
 
 ## Keeping images warm
 

@@ -677,9 +677,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", marker = "extra == 'mcp'", specifier = ">=0.115" },
+    { name = "fastapi", marker = "extra == 'mcp'", specifier = ">=0.133.0" },
     { name = "fastapi", marker = "extra == 'modal'", specifier = ">=0.115" },
-    { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.4.2" },
+    { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.4.2,<5" },
     { name = "modal", marker = "extra == 'mcp'", specifier = ">=1.5.3" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5.3" },
 ]

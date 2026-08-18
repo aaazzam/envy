@@ -397,6 +397,7 @@ class ModalRunner:
             schedule=modal.Cron(cron, timezone=timezone),
             name=name,
             timeout=timeout,
+            serialized=True,
         )
         def rebake() -> dict[str, str]:
             return runner.rebake()
@@ -438,6 +439,7 @@ class ModalRunner:
             name=name,
             secrets=[modal.Secret.from_name(token_secret, required_keys=[token_env])],
             timeout=timeout,
+            serialized=True,
         )
         @fastapi_endpoint(
             method="POST",

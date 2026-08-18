@@ -1,7 +1,7 @@
 import os
 import unittest
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -267,6 +267,106 @@ class ModalRunnerTests(unittest.TestCase):
             modal_app.function_options["schedule"].proto_message.cron.cron_string,
             "*/30 * * * *",
         )
+        self.assertTrue(modal_app.function_options["serialized"])
+        with patch.object(
+            runner, "rebake", return_value={"api": "image-id"}
+        ) as rebake_mock:
+            self.assertEqual(rebake(), {"api": "image-id"})
+        rebake_mock.assert_called_once_with()
+
+    def test_install_rebake_endpoint_configures_auth_and_supports_one_or_all(self):
+        import modal
+
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, show_output=False, _modal=FakeModal())
+
+        class FakeModalApp:
+            def __init__(self):
+                self.function_options = []
+
+            def function(self, **kwargs):
+                self.function_options.append(kwargs)
+
+                def decorate(fn):
+                    return fn
+
+                return decorate
+
+        endpoint_options = []
+
+        def endpoint_decorator(**kwargs):
+            endpoint_options.append(kwargs)
+
+            def decorate(fn):
+                return fn
+
+            return decorate
+
+        modal_app = FakeModalApp()
+        secret = object()
+        with (
+            patch.object(modal.Secret, "from_name", return_value=secret) as from_name,
+            patch.object(modal, "fastapi_endpoint", endpoint_decorator),
+        ):
+            endpoint = runner.install_rebake_endpoint(
+                modal_app,
+                token_secret="acme-devbox-rebake-token",
+            )
+            endpoint_without_proxy_auth = runner.install_rebake_endpoint(
+                modal_app,
+                token_secret="acme-devbox-rebake-token",
+                requires_proxy_auth=False,
+            )
+
+        from_name.assert_has_calls(
+            [
+                call(
+                    "acme-devbox-rebake-token",
+                    required_keys=["ENVY_REBAKE_TOKEN"],
+                ),
+                call(
+                    "acme-devbox-rebake-token",
+                    required_keys=["ENVY_REBAKE_TOKEN"],
+                ),
+            ]
+        )
+        self.assertEqual(modal_app.function_options[0]["secrets"], [secret])
+        self.assertTrue(modal_app.function_options[0]["serialized"])
+        self.assertEqual(
+            endpoint_options,
+            [
+                {"method": "POST", "label": None, "requires_proxy_auth": True},
+                {"method": "POST", "label": None, "requires_proxy_auth": False},
+            ],
+        )
+
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="correct"
+        )
+        with (
+            patch.dict(os.environ, {"ENVY_REBAKE_TOKEN": "correct"}),
+            patch.object(
+                runner,
+                "rebake",
+                side_effect=[
+                    {"api": "image-id"},
+                    {"api": "image-id", "worker": "worker-image-id"},
+                ],
+            ) as rebake_mock,
+        ):
+            self.assertEqual(
+                endpoint(credentials, {"environment": "api"}),
+                {"api": "image-id"},
+            )
+            self.assertEqual(
+                endpoint_without_proxy_auth(credentials),
+                {"api": "image-id", "worker": "worker-image-id"},
+            )
+
+        rebake_mock.assert_has_calls([call(environment="api"), call(environment=None)])
 
     def test_install_rebake_endpoint_requires_a_valid_token_variable(self):
         envy = Envy("acme-devboxes")
@@ -414,6 +514,33 @@ class ModalRunnerTests(unittest.TestCase):
 
         self.assertTrue(session.sandbox.detached)
         self.assertFalse(session.sandbox.terminated)
+
+    def test_readme_session_refreshes_new_sandboxes_and_reopens_by_id(self):
+        modal = FakeModal()
+        envy = Envy("acme-devboxes")
+        environment = envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, _modal=modal)
+        refreshes = []
+
+        with patch.object(
+            environment, "refresh", side_effect=lambda _sandbox: refreshes.append(True)
+        ):
+            session = runner.session(environment)
+            self.assertEqual(refreshes, [True])
+            sandbox_id = session.sandbox_id
+            with session as active:
+                self.assertIs(active, session)
+
+            reopened = runner.session(environment, sandbox_id=sandbox_id)
+            self.assertEqual(refreshes, [True])
+            with reopened as active:
+                environment.refresh(active.sandbox)
+
+        self.assertEqual(refreshes, [True, True])
+        self.assertEqual(modal.from_id_calls, [sandbox_id])
+        self.assertFalse(session.sandbox.terminated)
+        self.assertTrue(session.sandbox.detached)
+        self.assertTrue(reopened.sandbox.detached)
 
     def test_session_reopen_rejects_creation_options(self):
         modal = FakeModal()
