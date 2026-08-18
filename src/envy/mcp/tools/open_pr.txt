@@ -1,0 +1,8 @@
+Push the sandbox's current checkout and open a pull request on GitHub.
+
+Usage:
+- Pushes the current commit to `head` on `origin`, then opens a pull request from `head` into `base`.
+- The GitHub App installation token is minted by the server, not the sandbox.
+- Requires the server process to have `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` set.
+- Uses the environment's workdir unless `workdir` is given.
+- Use `bash` first to commit pending changes; this tool only pushes and opens the PR.

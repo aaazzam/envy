@@ -1,0 +1,8 @@
+Run a bash command inside the sandbox.
+
+Usage:
+- Each call runs in a fresh shell; shell state does not persist between calls.
+- Use the `workdir` parameter instead of prefixing commands with `cd`.
+- Quote paths that contain spaces.
+- The optional timeout is expressed in milliseconds and is capped at 600000.
+- Prefer `read`, `glob`, and `grep` for inspection, and use `bash` for commands that need a shell.

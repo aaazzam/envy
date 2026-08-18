@@ -58,6 +58,31 @@ publishing the new deployment version:
 modal deploy devboxes.py
 ```
 
+## Exposing the app over MCP
+
+Install the optional MCP integration with `pip install 'envy[mcp]'`. Build a
+server from the same `Envy` object used to declare the environments:
+
+```python
+from envy.mcp import create_server
+
+mcp = create_server(app)
+modal_app = app.app
+
+
+@modal_app.function(image=control_plane_image)
+@modal.asgi_app()
+def serve():
+    return mcp.http_app(stateless_http=True)
+```
+
+`control_plane_image` must contain the MCP dependencies and the Python package
+that declares `app`. The MCP server launches environments through Envy's
+deployed `launch_<environment>` functions and exposes `create_sandbox`,
+`kill_sandbox`, `bash`, `read`, `write`, `edit`, `glob`, `grep`, and `open_pr`.
+Only sandboxes created through this server are accepted by the tools; ownership
+is checked using the reserved `envy.app` and `envy.env` tags.
+
 ## Launching it
 
 ```python

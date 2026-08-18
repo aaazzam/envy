@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from re import fullmatch
-from typing import TYPE_CHECKING, Generic, Protocol, cast, final
+from typing import TYPE_CHECKING, Any, Generic, Protocol, cast, final
 
 from .env import Env
 from .errors import ConfigurationError, LifecycleError
@@ -198,6 +198,19 @@ class Envy:
     @property
     def environments(self) -> tuple[str, ...]:
         return tuple(self._environments)
+
+    def environment(self, name: str) -> Env[Any]:
+        """Return a registered environment by name.
+
+        This read-only lookup is useful to integrations that need to associate
+        a deployed sandbox with its declared environment without reaching into
+        Envy's private registry.
+        """
+        try:
+            environment = self._environments[name]
+        except KeyError as exc:
+            raise KeyError(f"environment {name!r} is not registered") from exc
+        return cast(Env[Any], environment)
 
     def env(
         self,
