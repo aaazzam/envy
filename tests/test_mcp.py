@@ -161,17 +161,23 @@ class MCPTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.envies.stop()
 
-    def test_server_exposes_lifecycle_and_search_tools(self) -> None:
+    def test_server_exposes_all_local_tools(self) -> None:
         mcp = create_server(make_envy("api"))
 
         self.assertTrue(
             {
                 "create_sandbox",
                 "kill_sandbox",
-                "search_tools",
-                "call_tool",
+                "bash",
+                "edit",
+                "glob",
+                "grep",
+                "read",
+                "write",
             }.issubset(tool_names(mcp))
         )
+        self.assertNotIn("search_tools", tool_names(mcp))
+        self.assertNotIn("call_tool", tool_names(mcp))
 
     def test_envy_mcp_method_creates_the_server(self) -> None:
         mcp = make_envy("api").mcp()

@@ -36,7 +36,7 @@ class GitHubTests(unittest.TestCase):
             client = provider.client_factory()
         self.assertEqual(
             client.transport.headers,
-            {"X-MCP-Toolsets": "pull_requests"},
+            {"X-MCP-Toolsets": "pull_requests,repos"},
         )
 
     def test_provider_can_leave_github_tool_names_unprefixed(self) -> None:

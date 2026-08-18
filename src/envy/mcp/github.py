@@ -13,7 +13,7 @@ from fastmcp.server.providers import ProxyProvider
 from fastmcp.server.transforms import Namespace
 
 _GITHUB_MCP_HEADERS = {
-    "X-MCP-Toolsets": "pull_requests",
+    "X-MCP-Toolsets": "pull_requests,repos",
 }
 
 

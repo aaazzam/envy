@@ -113,11 +113,11 @@ the MCP server, while each sandbox uses the `base` image and transforms from
 its `app.env(...)` declaration. The server builds and launches those
 environments directly and combines Envy's sandbox tools with the tools from
 the configured GitHub MCP server. Envy internally selects the complete
-`pull_requests` toolset through the `X-MCP-Toolsets` header supported by
-GitHub's remote server. The pull-request toolset includes create, list, read,
-search, reviews, comments, merge, and update operations. FastMCP's tool search
-transform keeps the catalog manageable while leaving the underlying tools
-callable. Only sandboxes created through this server are accepted by the Envy
+`pull_requests` and `repos` toolsets through the `X-MCP-Toolsets` header
+supported by GitHub's remote server. The pull-request toolset includes create,
+list, read, search, reviews, comments, merge, and update operations; the repos
+toolset includes repository and branch operations. The complete tool catalog is
+exposed directly. Only sandboxes created through this server are accepted by the Envy
 tools; ownership is checked using the reserved `envy.app` and `envy.env` tags.
 The sandbox image must provide `bash` and `ripgrep`; the latter is installed
 above for the `glob` and `grep` tools.

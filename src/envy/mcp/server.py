@@ -334,9 +334,6 @@ def create_server(
     git_token_env: str = "GITHUB_TOKEN",
     github_mcp_url: str | None = None,
     github_mcp_namespace: str | None = "github",
-    tool_search: bool = True,
-    tool_search_max_results: int = 5,
-    tool_search_always_visible: Sequence[str] = ("create_sandbox", "kill_sandbox"),
     workspace_store: WorkspaceStore | None = None,
     **fastmcp_settings: Any,
 ) -> FastMCP:
@@ -364,15 +361,6 @@ def create_server(
     transforms.insert(
         0, WorkspacePublishTransform(envy_provider.publish_workspace_branch)
     )
-    if tool_search:
-        from fastmcp.server.transforms.search import BM25SearchTransform
-
-        transforms.append(
-            BM25SearchTransform(
-                max_results=tool_search_max_results,
-                always_visible=list(tool_search_always_visible),
-            )
-        )
     return FastMCP(
         name=name or envy.name,
         instructions=instructions,
