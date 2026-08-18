@@ -59,6 +59,5 @@ def edit(
     with output:
         output.write(new_content)
     return (
-        f"The file {file_path} has been updated. "
-        f"({replacement_count} replacement(s))"
+        f"The file {file_path} has been updated. ({replacement_count} replacement(s))"
     )

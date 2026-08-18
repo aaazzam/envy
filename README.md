@@ -16,7 +16,10 @@ api = app.env(
     "api",
     base=modal.Image.debian_slim(),
     source=envy.GitSource.github("acme/api", ref="main"),
-    build=[envy.apt_install("git", "curl"), envy.pip_install("uv")],  # baked into the image
+    build=[
+        envy.apt_install("git", "curl"),
+        envy.pip_install("uv"),
+    ],  # baked into the image
     setup=[envy.run_commands("uv sync")],  # after source, in workdir
     env={"ENV": "dev"},
     ports=[8000],
@@ -43,7 +46,9 @@ Compose with layers — each brings its own source, steps, and rules:
 
 ```python
 docs = envy.Layer(
-    "docs", source=envy.GitSource.github("acme/docs"), build=[envy.pip_install("mkdocs")]
+    "docs",
+    source=envy.GitSource.github("acme/docs"),
+    build=[envy.pip_install("mkdocs")],
 )
 api.include(docs)
 ```

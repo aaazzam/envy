@@ -161,9 +161,9 @@ class ModalRunnerTests(unittest.TestCase):
         )
         env.on_start(lambda sandbox: started.append(sandbox))
 
-        sandbox = ModalRunner(
-            envy, show_output=False, _modal=modal
-        ).run(env, stamp="abc")
+        sandbox = ModalRunner(envy, show_output=False, _modal=modal).run(
+            env, stamp="abc"
+        )
 
         self.assertEqual(started, [sandbox])
         self.assertEqual(
@@ -245,9 +245,7 @@ class ModalRunnerTests(unittest.TestCase):
         environment = envy.env("api", base=FakeImage())
         runner = ModalRunner(envy, _modal=modal)
 
-        session = runner.session(
-            environment, name="adam-api", tags={"branch": "main"}
-        )
+        session = runner.session(environment, name="adam-api", tags={"branch": "main"})
 
         self.assertEqual(session.sandbox_id, "sb-created")
         self.assertEqual(modal.from_id_calls, [])
@@ -283,9 +281,7 @@ class ModalRunnerTests(unittest.TestCase):
         environment = envy.env("api", base=FakeImage())
         runner = ModalRunner(envy, _modal=modal)
 
-        with self.assertRaisesRegex(
-            ValueError, "cannot be used when reopening"
-        ):
+        with self.assertRaisesRegex(ValueError, "cannot be used when reopening"):
             runner.session(environment, sandbox_id="sb-existing", name="adam-api")
 
     def test_session_detach_does_not_mask_body_errors(self):
@@ -306,9 +302,7 @@ class ModalRunnerTests(unittest.TestCase):
         image = FakeImage()
         envy = Envy("envy-test")
         env = envy.env("api", base=image)
-        runner = ModalRunner(
-            envy, show_output=False, _modal=modal
-        )
+        runner = ModalRunner(envy, show_output=False, _modal=modal)
 
         with runner.managed_run(env) as sandbox:
             self.assertFalse(sandbox.terminated)
@@ -339,9 +333,7 @@ class ModalRunnerTests(unittest.TestCase):
         env = envy.env("api", base=image)
 
         with self.assertRaisesRegex(RuntimeError, "terminate failed") as raised:
-            with ModalRunner(
-                envy, show_output=False, _modal=modal
-            ).managed_run(env):
+            with ModalRunner(envy, show_output=False, _modal=modal).managed_run(env):
                 pass
 
         self.assertIn("detach failed", " ".join(raised.exception.__notes__))

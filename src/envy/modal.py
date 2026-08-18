@@ -101,9 +101,7 @@ def _managed_sandbox(
         _cleanup_sandbox(sandbox)
 
 
-def _detach_sandbox(
-    sandbox: modal.Sandbox, error: BaseException | None = None
-) -> None:
+def _detach_sandbox(sandbox: modal.Sandbox, error: BaseException | None = None) -> None:
     try:
         sandbox.detach()
     except Exception as detach_error:

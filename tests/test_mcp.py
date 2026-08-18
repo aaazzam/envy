@@ -119,9 +119,7 @@ class MCPTests(unittest.TestCase):
 
     def test_kill_rejects_sandbox_from_another_app(self) -> None:
         envy = make_envy("api")
-        sandbox = FakeSandbox(
-            tags={"envy.app": "other-app", "envy.env": "api"}
-        )
+        sandbox = FakeSandbox(tags={"envy.app": "other-app", "envy.env": "api"})
 
         class FakeModal:
             class Sandbox:

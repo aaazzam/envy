@@ -80,9 +80,7 @@ def require_absolute_path(path: str, *, parameter: str = "file_path") -> str:
     return path
 
 
-def validate_line_window(
-    *, offset: int | None, limit: int | None
-) -> tuple[int, int]:
+def validate_line_window(*, offset: int | None, limit: int | None) -> tuple[int, int]:
     """Return zero-based start and count for a 1-indexed line window."""
     if offset is not None and offset < 1:
         raise ValueError("offset must be a 1-indexed line number")
@@ -137,9 +135,7 @@ def resolve_sandbox(
     return OwnedSandbox(sandbox=sandbox, envy=envy, environment=environment)
 
 
-def require_registered_sandbox(
-    sandbox_id: str, envy: Envy
-) -> OwnedSandbox:
+def require_registered_sandbox(sandbox_id: str, envy: Envy) -> OwnedSandbox:
     """Resolve a sandbox and require ownership by one specific Envy app."""
     return resolve_sandbox(sandbox_id, envies=[envy])
 
