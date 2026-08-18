@@ -9,7 +9,7 @@ from .errors import (
     SourceRefreshUnsupported,
 )
 from .image import Image, ImageTransform, apply_transform
-from .modal import Envy, ModalRunner, ModalSession
+from .modal import Envy, ModalDeployment, ModalRunner, ModalSession
 from .sandbox import Resources, Sandbox, SandboxSpec
 from .source import GitSource, LocalSource, Source
 from .steps import (
@@ -37,6 +37,7 @@ __all__ = [
     "Layer",
     "LifecycleError",
     "LocalSource",
+    "ModalDeployment",
     "ModalRunner",
     "ModalSession",
     "Resources",

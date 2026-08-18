@@ -161,39 +161,20 @@ class ModalSession(Generic[ImageT], AbstractContextManager["ModalSession[ImageT]
 
 @final
 class Envy:
-    """A collection of environments compiled into one deployable Modal App."""
+    """A collection of environments compiled into a backend deployment."""
 
     def __init__(
         self,
         name: str,
         *,
         stamp: str = "0",
-        launch_timeout: int = 60 * 60,
-        _modal: _ModalApi | None = None,
     ) -> None:
         if not name:
             raise ValueError("Envy requires a non-empty app name")
         self.name = name
         self.stamp = stamp
-        self.launch_timeout = launch_timeout
-        self._modal_module = _modal
         self._environments: dict[str, object] = {}
-        self._app: modal.App | None = None
-
-    @property
-    def modal(self) -> _ModalApi:
-        if self._modal_module is None:
-            try:
-                import modal as modal_module
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Envy deployment requires the Modal SDK; install envy[modal]"
-                ) from exc
-            module_object: object = modal_module
-            self._modal_module = cast(  # pyright: ignore[reportInvalidCast]
-                _ModalApi, module_object
-            )
-        return self._modal_module
+        self._frozen = False
 
     @property
     def environments(self) -> tuple[str, ...]:
@@ -229,6 +210,16 @@ class Envy:
             ) from exc
         return create_server(self, **settings)
 
+    def freeze(self) -> None:
+        """Freeze this declaration and all registered environments."""
+        if not self._environments:
+            raise RuntimeError("cannot freeze an Envy declaration without environments")
+        if self._frozen:
+            return
+        for environment_object in self._environments.values():
+            cast(_EnvApi, environment_object).freeze()
+        self._frozen = True
+
     def env(
         self,
         name: str,
@@ -262,9 +253,9 @@ class Envy:
         return self.register(environment)
 
     def register(self, environment: Env[ImageT]) -> Env[ImageT]:
-        if self._app is not None:
+        if self._frozen:
             raise LifecycleError(
-                "cannot register an environment after envy.app is created"
+                "cannot register an environment after deployment export"
             )
         name = str(environment.name)
         if not name:
@@ -278,21 +269,50 @@ class Envy:
         self._environments[name] = environment
         return environment
 
+@final
+class ModalDeployment:
+    """Compile an :class:`Envy` declaration into a deployable Modal App."""
+
+    def __init__(
+        self,
+        envy: Envy,
+        *,
+        launch_timeout: int = 60 * 60,
+        _modal: _ModalApi | None = None,
+    ) -> None:
+        self.envy = envy
+        self.launch_timeout = launch_timeout
+        self._modal_module = _modal
+        self._app: modal.App | None = None
+
     @property
-    def app(self) -> modal.App:
+    def modal(self) -> _ModalApi:
+        if self._modal_module is None:
+            try:
+                import modal as modal_module
+            except ImportError as exc:
+                raise RuntimeError(
+                    "ModalDeployment requires the Modal SDK; install envy[modal]"
+                ) from exc
+            module_object: object = modal_module
+            self._modal_module = cast(  # pyright: ignore[reportInvalidCast]
+                _ModalApi, module_object
+            )
+        return self._modal_module
+
+    def export(self) -> modal.App:
+        """Create and return the Modal App containing Envy's launchers."""
         if self._app is None:
-            if not self._environments:
-                raise RuntimeError("cannot create envy.app without environments")
-            app = self.modal.App(self.name)
-            for environment_object in self._environments.values():
-                environment = cast(_EnvApi, environment_object)
-                environment.freeze()
+            self.envy.freeze()
+            app = self.modal.App(self.envy.name)
+            for environment_name in self.envy.environments:
+                environment = cast(_EnvApi, self.envy.environment(environment_name))
                 self._register_launcher(app, environment)
             self._app = app
         return self._app
 
     def _register_launcher(self, app: modal.App, environment: _EnvApi) -> None:
-        spec = environment.spec(stamp=self.stamp)
+        spec = environment.spec(stamp=self.envy.stamp)
         environment_name = str(environment.name)
         modal_api = self.modal
         image_object: object = spec.image

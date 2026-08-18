@@ -47,8 +47,8 @@ docs = envy.Layer(
 )
 api.include(docs)
 
-# Exporting the app freezes every environment, layer, rule, and hook.
-modal_app = app.app
+# Exporting the Envy declaration freezes every environment, layer, rule, and hook.
+modal_app = envy.ModalDeployment(app).export()
 ```
 
 Deploy the complete app. Modal builds every registered environment image before
@@ -71,7 +71,7 @@ app = envy.Envy("acme-devboxes")
 api = app.env("api", base=modal.Image.debian_slim())
 
 mcp = app.mcp()
-modal_app = app.app
+modal_app = envy.ModalDeployment(app).export()
 
 
 @modal_app.function(image=control_plane_image)

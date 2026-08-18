@@ -2,7 +2,7 @@ import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from envy.modal import Envy, ModalRunner
+from envy.modal import Envy, ModalDeployment, ModalRunner
 from envy.sandbox import Resources, SandboxSpec
 
 
@@ -376,15 +376,15 @@ class ModalRunnerTests(unittest.TestCase):
 
 
 class EnvyTests(unittest.TestCase):
-    def test_app_requires_at_least_one_environment(self):
-        envy = Envy("acme-devboxes", _modal=FakeModal())
+    def test_deployment_requires_at_least_one_environment(self):
+        envy = Envy("acme-devboxes")
 
         with self.assertRaisesRegex(RuntimeError, "without environments"):
-            _ = envy.app
+            ModalDeployment(envy, _modal=FakeModal()).export()
 
     def test_env_registers_a_deployable_launcher(self):
         modal = FakeModal()
-        envy = Envy("acme-devboxes", stamp="revision-1", _modal=modal)
+        envy = Envy("acme-devboxes", stamp="revision-1")
         environment = envy.env(
             "api",
             base=FakeImage(),
@@ -396,7 +396,7 @@ class EnvyTests(unittest.TestCase):
         started = []
         environment.on_start(lambda sandbox: started.append(sandbox))
 
-        app = envy.app
+        app = ModalDeployment(envy, _modal=modal).export()
         self.assertTrue(environment.is_frozen)
         launcher = app.registered_functions["launch_api"]
         sandbox_id = launcher(
@@ -434,25 +434,25 @@ class EnvyTests(unittest.TestCase):
             },
         )
 
-    def test_registration_closes_when_app_is_materialized(self):
+    def test_registration_closes_when_deployment_is_exported(self):
         modal = FakeModal()
-        envy = Envy("acme-devboxes", _modal=modal)
+        envy = Envy("acme-devboxes")
         envy.env("api", base=FakeImage())
-        _ = envy.app
+        ModalDeployment(envy, _modal=modal).export()
 
-        with self.assertRaisesRegex(RuntimeError, "after envy.app"):
+        with self.assertRaisesRegex(RuntimeError, "after deployment export"):
             envy.env("worker", base=FakeImage())
 
-    def test_environment_configuration_freezes_with_app(self):
-        envy = Envy("acme-devboxes", _modal=FakeModal())
+    def test_environment_configuration_freezes_with_deployment(self):
+        envy = Envy("acme-devboxes")
         environment = envy.env("api", base=FakeImage())
-        _ = envy.app
+        ModalDeployment(envy, _modal=FakeModal()).export()
 
         with self.assertRaisesRegex(RuntimeError, "frozen"):
             environment.on_start(lambda _sandbox: None)
 
     def test_duplicate_environment_names_are_rejected(self):
-        envy = Envy("acme-devboxes", _modal=FakeModal())
+        envy = Envy("acme-devboxes")
         envy.env("api", base=FakeImage())
 
         with self.assertRaisesRegex(ValueError, "already registered"):
