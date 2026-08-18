@@ -1,0 +1,8 @@
+Read a file from the sandbox filesystem.
+
+Usage:
+- `file_path` must be absolute.
+- `offset` is a 1-indexed starting line.
+- `limit` is the maximum number of lines to return and defaults to 2000.
+- Lines longer than 2000 characters are truncated.
+- Output is numbered in cat -n style. Use `glob` or `grep` to inspect directories.

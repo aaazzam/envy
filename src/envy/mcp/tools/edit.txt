@@ -1,0 +1,7 @@
+Perform an exact string replacement in a file.
+
+Usage:
+- `file_path` must be absolute.
+- `old_string` and `new_string` must be different.
+- `old_string` must occur in the file.
+- By default, `old_string` must be unique. Provide more surrounding context or set `replace_all=true` when there are multiple matches.

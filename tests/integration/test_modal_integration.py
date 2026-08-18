@@ -9,7 +9,7 @@ try:
 except ImportError:  # The Modal backend is optional.
     modal = None
 
-from envy import Env, LocalSource, ModalRunner
+from envy import Envy, LocalSource, ModalRunner
 
 
 @unittest.skipUnless(
@@ -27,7 +27,8 @@ class ModalIntegrationTests(unittest.TestCase):
             obsolete.write_text("remove me")
 
             source = LocalSource(directory, workdir="/workspace")
-            environment = Env(
+            app = Envy("envy-integration")
+            environment = app.env(
                 "integration",
                 base=modal.Image.debian_slim(),
                 source=source,
@@ -37,32 +38,30 @@ class ModalIntegrationTests(unittest.TestCase):
                 lambda _sandbox, changes: routed.extend(changes.matched)
             )
 
-            app = modal.App("envy-integration")
-            with app.run():
-                runner = ModalRunner(app, timeout=300)
-                name = f"envy-integration-{uuid4().hex[:8]}"
-                with runner.managed_run(environment, name=name) as sandbox:
-                    initial = sandbox.exec("cat", "/workspace/message.txt")
-                    self.assertEqual(initial.wait(), 0)
-                    self.assertEqual(initial.stdout.read(), "before")
+            runner = ModalRunner(app, timeout=300)
+            name = f"envy-integration-{uuid4().hex[:8]}"
+            with runner.managed_run(environment, name=name) as sandbox:
+                initial = sandbox.exec("cat", "/workspace/message.txt")
+                self.assertEqual(initial.wait(), 0)
+                self.assertEqual(initial.stdout.read(), "before")
 
-                    message.write_text("after")
-                    obsolete.unlink()
-                    tool = root / "tool.sh"
-                    tool.write_text("#!/bin/sh\necho refreshed\n")
-                    tool.chmod(0o755)
+                message.write_text("after")
+                obsolete.unlink()
+                tool = root / "tool.sh"
+                tool.write_text("#!/bin/sh\necho refreshed\n")
+                tool.chmod(0o755)
 
-                    environment.refresh(sandbox)
+                environment.refresh(sandbox)
 
-                    refreshed = sandbox.exec("cat", "/workspace/message.txt")
-                    self.assertEqual(refreshed.wait(), 0)
-                    self.assertEqual(refreshed.stdout.read(), "after")
-                    executable = sandbox.exec("/workspace/tool.sh")
-                    self.assertEqual(executable.wait(), 0)
-                    self.assertEqual(executable.stdout.read().strip(), "refreshed")
-                    removed = sandbox.exec("test", "!", "-e", "/workspace/obsolete.txt")
-                    self.assertEqual(removed.wait(), 0)
-                    self.assertEqual(tuple(map(str, routed)), ("message.txt",))
+                refreshed = sandbox.exec("cat", "/workspace/message.txt")
+                self.assertEqual(refreshed.wait(), 0)
+                self.assertEqual(refreshed.stdout.read(), "after")
+                executable = sandbox.exec("/workspace/tool.sh")
+                self.assertEqual(executable.wait(), 0)
+                self.assertEqual(executable.stdout.read().strip(), "refreshed")
+                removed = sandbox.exec("test", "!", "-e", "/workspace/obsolete.txt")
+                self.assertEqual(removed.wait(), 0)
+                self.assertEqual(tuple(map(str, routed)), ("message.txt",))
 
 
 if __name__ == "__main__":

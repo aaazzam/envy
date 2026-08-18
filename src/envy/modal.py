@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from re import fullmatch
-from typing import TYPE_CHECKING, Generic, Protocol, cast, final
+from typing import TYPE_CHECKING, Any, Generic, Protocol, cast, final
 
 from .env import Env
 from .errors import ConfigurationError, LifecycleError
@@ -18,8 +18,6 @@ _DEFAULT_RESOURCES = Resources()
 
 
 class _AppApi(Protocol):
-    def __call__(self, name: str) -> modal.App: ...
-
     def lookup(
         self,
         name: str,
@@ -35,27 +33,12 @@ class _SandboxApi(Protocol):
     def from_id(self, sandbox_id: str) -> modal.Sandbox: ...
 
 
-class _RemoteFunction(Protocol):
-    def remote(self, **kwargs: object) -> object: ...
-
-
-class _FunctionApi(Protocol):
-    def from_name(
-        self,
-        app_name: str,
-        name: str,
-        *,
-        environment_name: str | None,
-    ) -> _RemoteFunction: ...
-
-
 class _BuildableImage(Protocol):
     def build(self, app: object) -> object: ...
 
 
 class _ModalApi(Protocol):
     App: _AppApi
-    Function: _FunctionApi
     Sandbox: _SandboxApi
 
     def enable_output(self) -> AbstractContextManager[None]: ...
@@ -78,10 +61,6 @@ class _EnvApi(Protocol):
     def spec(self, *, stamp: str) -> _SpecApi: ...
     def start(self, sandbox: Sandbox) -> None: ...
     def freeze(self) -> None: ...
-
-
-def _function_name(environment: str) -> str:
-    return f"launch_{environment}"
 
 
 def _cleanup_sandbox(
@@ -122,9 +101,7 @@ def _managed_sandbox(
         _cleanup_sandbox(sandbox)
 
 
-def _detach_sandbox(
-    sandbox: modal.Sandbox, error: BaseException | None = None
-) -> None:
+def _detach_sandbox(sandbox: modal.Sandbox, error: BaseException | None = None) -> None:
     try:
         sandbox.detach()
     except Exception as detach_error:
@@ -161,43 +138,64 @@ class ModalSession(Generic[ImageT], AbstractContextManager["ModalSession[ImageT]
 
 @final
 class Envy:
-    """A collection of environments compiled into one deployable Modal App."""
+    """A named declaration containing a collection of environments."""
 
     def __init__(
         self,
         name: str,
         *,
         stamp: str = "0",
-        launch_timeout: int = 60 * 60,
-        _modal: _ModalApi | None = None,
     ) -> None:
         if not name:
             raise ValueError("Envy requires a non-empty app name")
         self.name = name
         self.stamp = stamp
-        self.launch_timeout = launch_timeout
-        self._modal_module = _modal
         self._environments: dict[str, object] = {}
-        self._app: modal.App | None = None
-
-    @property
-    def modal(self) -> _ModalApi:
-        if self._modal_module is None:
-            try:
-                import modal as modal_module
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Envy deployment requires the Modal SDK; install envy[modal]"
-                ) from exc
-            module_object: object = modal_module
-            self._modal_module = cast(  # pyright: ignore[reportInvalidCast]
-                _ModalApi, module_object
-            )
-        return self._modal_module
+        self._frozen = False
 
     @property
     def environments(self) -> tuple[str, ...]:
         return tuple(self._environments)
+
+    def environment(self, name: str) -> Env[Any]:
+        """Return a registered environment by name.
+
+        This read-only lookup is useful to integrations that need to associate
+        a sandbox with its declared environment without reaching into Envy's
+        private registry.
+        """
+        try:
+            environment = self._environments[name]
+        except KeyError as exc:
+            raise KeyError(f"environment {name!r} is not registered") from exc
+        return cast(Env[Any], environment)
+
+    def mcp(self, **settings: Any) -> Any:
+        """Create an MCP server exposing this app's environments.
+
+        MCP support is optional. The import stays lazy so the core Envy package
+        remains usable without FastMCP; call ``app.mcp()`` only after
+        installing the ``envy[mcp]`` extra.
+        """
+        try:
+            from .mcp import create_server
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"fastmcp", "mcp", "modal"}:
+                raise
+            raise RuntimeError(
+                "MCP support is optional; install it with `uv add 'envy[mcp]'`"
+            ) from exc
+        return create_server(self, **settings)
+
+    def freeze(self) -> None:
+        """Freeze this declaration and all registered environments."""
+        if not self._environments:
+            raise RuntimeError("cannot freeze an Envy declaration without environments")
+        if self._frozen:
+            return
+        for environment_object in self._environments.values():
+            cast(_EnvApi, environment_object).freeze()
+        self._frozen = True
 
     def env(
         self,
@@ -232,9 +230,9 @@ class Envy:
         return self.register(environment)
 
     def register(self, environment: Env[ImageT]) -> Env[ImageT]:
-        if self._app is not None:
+        if self._frozen:
             raise LifecycleError(
-                "cannot register an environment after envy.app is created"
+                "cannot register an environment after declaration freeze"
             )
         name = str(environment.name)
         if not name:
@@ -248,80 +246,14 @@ class Envy:
         self._environments[name] = environment
         return environment
 
-    @property
-    def app(self) -> modal.App:
-        if self._app is None:
-            if not self._environments:
-                raise RuntimeError("cannot create envy.app without environments")
-            app = self.modal.App(self.name)
-            for environment_object in self._environments.values():
-                environment = cast(_EnvApi, environment_object)
-                environment.freeze()
-                self._register_launcher(app, environment)
-            self._app = app
-        return self._app
-
-    def _register_launcher(self, app: modal.App, environment: _EnvApi) -> None:
-        spec = environment.spec(stamp=self.stamp)
-        environment_name = str(environment.name)
-        modal_api = self.modal
-        image_object: object = spec.image
-        modal_image = cast("modal.Image", image_object)
-
-        @app.function(  # pyright: ignore[reportUnknownMemberType]
-            image=modal_image,
-            name=_function_name(environment_name),
-            serialized=True,
-            timeout=self.launch_timeout,
-        )
-        def _launch(
-            *,
-            name: str | None = None,
-            tags: dict[str, str] | None = None,
-            timeout: int = 300,
-            idle_timeout: int | None = None,
-        ) -> str:
-            sandbox_tags = {key: str(value) for key, value in spec.metadata.items()}
-            sandbox_tags["envy.env"] = environment_name
-            sandbox_tags.update(tags or {})
-            sandbox = modal_api.Sandbox.create(
-                name=name,
-                tags=sandbox_tags,
-                image=spec.image,
-                env=dict(spec.env) or None,
-                secrets=spec.secrets or None,
-                timeout=timeout,
-                idle_timeout=idle_timeout,
-                workdir=spec.workdir,
-                gpu=spec.resources.gpu,
-                cpu=spec.resources.cpu,
-                memory=spec.resources.memory,
-                volumes=dict(spec.mounts),
-                encrypted_ports=spec.ports,
-            )
-            try:
-                environment.start(sandbox)
-            except BaseException as error:
-                _cleanup_sandbox(sandbox, error)
-                raise
-            sandbox_id = sandbox.object_id
-            try:
-                sandbox.detach()
-            except BaseException as error:
-                _cleanup_sandbox(sandbox, error)
-                raise
-            return sandbox_id
-
-        _ = _launch
-
 
 @final
 class ModalRunner:
-    """Build and run Envy environments on Modal Sandboxes."""
+    """Build and run an Envy declaration on Modal Sandboxes."""
 
     def __init__(
         self,
-        app: str | modal.App = "envy",
+        envy: Envy,
         *,
         environment_name: str | None = None,
         show_output: bool = True,
@@ -329,7 +261,7 @@ class ModalRunner:
         idle_timeout: int | None = None,
         _modal: _ModalApi | None = None,
     ) -> None:
-        self._app_ref = app
+        self.envy = envy
         self.environment_name = environment_name
         self.show_output = show_output
         self.timeout = timeout
@@ -355,14 +287,11 @@ class ModalRunner:
     @property
     def app(self) -> modal.App:
         if self._resolved_app is None:
-            if isinstance(self._app_ref, str):
-                self._resolved_app = self.modal.App.lookup(
-                    self._app_ref,
-                    create_if_missing=True,
-                    environment_name=self.environment_name,
-                )
-            else:
-                self._resolved_app = self._app_ref
+            self._resolved_app = self.modal.App.lookup(
+                self.envy.name,
+                create_if_missing=True,
+                environment_name=self.environment_name,
+            )
         return self._resolved_app
 
     def build(self, spec: SandboxSpec[ImageT]) -> ImageT:
@@ -382,23 +311,14 @@ class ModalRunner:
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> modal.Sandbox:
-        """Launch an environment registered in a deployed Envy App."""
-        if not isinstance(self._app_ref, str):
-            raise TypeError("deployed launches require a Modal App name")
-        launcher = self.modal.Function.from_name(
-            self._app_ref,
-            _function_name(environment),
-            environment_name=self.environment_name,
-        )
-        sandbox_id = launcher.remote(
+        """Build and launch a named environment from this Envy declaration."""
+        env = self.envy.environment(environment)
+        return self.run(
+            env,
+            stamp=self.envy.stamp,
             name=name,
             tags=tags,
-            timeout=self.timeout,
-            idle_timeout=self.idle_timeout,
         )
-        if not isinstance(sandbox_id, str):
-            raise TypeError("deployed Envy launcher returned an invalid Sandbox id")
-        return self.modal.Sandbox.from_id(sandbox_id)
 
     def launch_spec(
         self,
@@ -438,7 +358,7 @@ class ModalRunner:
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> AbstractContextManager[modal.Sandbox]:
-        """Launch a deployed environment and always terminate and detach it."""
+        """Launch an environment and always terminate and detach its sandbox."""
         return _managed_sandbox(self.launch(environment, name=name, tags=tags))
 
     def session(
@@ -449,13 +369,13 @@ class ModalRunner:
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> ModalSession[ImageT]:
-        """Open a new or existing deployed sandbox for ``env``.
+        """Open a new or existing sandbox for ``env``.
 
-        When ``sandbox_id`` is omitted, the environment's deployed launcher
-        creates a new sandbox. Otherwise, the existing Modal Sandbox is
-        reopened by ID. Exiting the session detaches the local handle but does
-        not terminate the remote sandbox. Refreshing remains explicit through
-        ``env.refresh(session.sandbox)``.
+        When ``sandbox_id`` is omitted, this runner builds and creates a new
+        sandbox for the named environment. Otherwise, the existing Modal
+        Sandbox is reopened by ID. Exiting the session detaches the local
+        handle but does not terminate the remote sandbox. Refreshing remains
+        explicit through ``env.refresh(session.sandbox)``.
         """
         if sandbox_id is None:
             if env.name is None:
@@ -473,12 +393,14 @@ class ModalRunner:
         self,
         env: Env[ImageT],
         *,
-        stamp: str = "0",
+        stamp: str | None = None,
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> modal.Sandbox:
         """Compile, build, launch, and run the ready hooks for an environment."""
-        spec = env.spec(stamp=stamp)
+        self.envy.freeze()
+        resolved_stamp = self.envy.stamp if stamp is None else stamp
+        spec = env.spec(stamp=resolved_stamp)
         env_tags = {"envy.env": str(env.name)}
         env_tags.update(tags or {})
         sandbox = self.launch_spec(spec, name=name, tags=env_tags)
@@ -493,7 +415,7 @@ class ModalRunner:
         self,
         env: Env[ImageT],
         *,
-        stamp: str = "0",
+        stamp: str | None = None,
         name: str | None = None,
         tags: dict[str, str] | None = None,
     ) -> AbstractContextManager[modal.Sandbox]:

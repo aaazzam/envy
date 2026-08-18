@@ -26,6 +26,10 @@ Issues = "https://github.com/aaazzam/envy/issues"
 
 [project.optional-dependencies]
 modal = ["modal>=1.5.3"]
+mcp = [
+    "fastmcp>=3.4.2",
+    "modal>=1.5.3",
+]
 
 [dependency-groups]
 dev = [

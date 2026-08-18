@@ -1,0 +1,6 @@
+Find files in the sandbox using ripgrep glob matching.
+
+Usage:
+- `pattern` accepts ripgrep glob syntax, such as `**/*.py` or `src/**/*.ts`.
+- `path` is the directory to search and defaults to the sandbox command directory.
+- Returns matching file paths or `No files found`.

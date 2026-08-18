@@ -1,0 +1,7 @@
+Search file contents in the sandbox using ripgrep.
+
+Usage:
+- `pattern` is a required regular expression.
+- `path` is the directory to search and defaults to the sandbox command directory.
+- `include` filters files with ripgrep glob syntax, such as `*.py`.
+- Returns matching lines with file paths and line numbers, or `No matches found`.
