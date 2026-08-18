@@ -466,6 +466,7 @@ class ModalRunner:
         *,
         name: str | None = None,
         tags: dict[str, str] | None = None,
+        experimental_options: Mapping[str, Any] | None = None,
     ) -> modal.Sandbox:
         """Build and launch a named environment from this Envy declaration."""
         env = self.envy.environment(environment)
@@ -474,6 +475,7 @@ class ModalRunner:
             stamp=self.envy.stamp,
             name=name,
             tags=tags,
+            experimental_options=experimental_options,
         )
 
     def launch_spec(
@@ -484,33 +486,79 @@ class ModalRunner:
         image_key: str | None = None,
         name: str | None = None,
         tags: dict[str, str] | None = None,
+        image_override: object | None = None,
+        secrets_override: Sequence[object] | None = None,
+        experimental_options: Mapping[str, Any] | None = None,
     ) -> modal.Sandbox:
         """Build ``spec`` and create its Modal Sandbox."""
         image: object
-        stored_image_id = self._stored_image_id(image_key) if image_key else None
-        if stored_image_id is not None:
-            image = self.modal.Image.from_id(stored_image_id)
+        if image_override is not None:
+            image = image_override
         else:
-            image = self.build(spec) if build else spec.image
+            stored_image_id = self._stored_image_id(image_key) if image_key else None
+            if stored_image_id is not None:
+                image = self.modal.Image.from_id(stored_image_id)
+            else:
+                image = self.build(spec) if build else spec.image
 
         sandbox_tags = {key: str(value) for key, value in spec.metadata.items()}
         sandbox_tags.update(tags or {})
 
-        return self.modal.Sandbox.create(
-            app=self.app,
+        create_kwargs: dict[str, object] = {
+            "app": self.app,
+            "name": name,
+            "tags": sandbox_tags or None,
+            "image": image,
+            "env": dict(spec.env) or None,
+            "secrets": (
+                tuple(spec.secrets)
+                if secrets_override is None
+                else tuple(secrets_override)
+            )
+            or None,
+            "timeout": self.timeout,
+            "idle_timeout": self.idle_timeout,
+            "workdir": spec.workdir,
+            "gpu": spec.resources.gpu,
+            "cpu": spec.resources.cpu,
+            "memory": spec.resources.memory,
+            "volumes": dict(spec.mounts),
+            "encrypted_ports": spec.ports,
+        }
+        if experimental_options is not None:
+            create_kwargs["experimental_options"] = dict(experimental_options)
+        return self.modal.Sandbox.create(**create_kwargs)
+
+    def launch_from_snapshot(
+        self,
+        environment: str,
+        snapshot: object,
+        *,
+        name: str | None = None,
+        tags: dict[str, str] | None = None,
+        secrets: Sequence[object] | None = None,
+    ) -> modal.Sandbox:
+        """Launch a new sandbox from a prior sandbox exit snapshot.
+
+        The snapshot already contains the prepared filesystem, so source
+        refresh and start hooks are intentionally not run again. Secrets are
+        supplied separately, which lets a privileged publisher receive a Git
+        secret without adding it to the agent's canonical sandbox.
+        """
+        self.envy.freeze()
+        env = self.envy.environment(environment)
+        spec = env.spec(stamp=self.envy.stamp)
+        env_tags = {"envy.env": str(env.name)}
+        env_tags.update(tags or {})
+        return self.launch_spec(
+            spec,
+            build=False,
+            image_key=None,
             name=name,
-            tags=sandbox_tags or None,
-            image=image,
-            env=dict(spec.env) or None,
-            secrets=spec.secrets or None,
-            timeout=self.timeout,
-            idle_timeout=self.idle_timeout,
-            workdir=spec.workdir,
-            gpu=spec.resources.gpu,
-            cpu=spec.resources.cpu,
-            memory=spec.resources.memory,
-            volumes=dict(spec.mounts),
-            encrypted_ports=spec.ports,
+            tags=env_tags,
+            image_override=snapshot,
+            secrets_override=secrets,
+            experimental_options={"enable_exit_snapshot": True},
         )
 
     def managed_launch(
@@ -558,6 +606,7 @@ class ModalRunner:
         stamp: str | None = None,
         name: str | None = None,
         tags: dict[str, str] | None = None,
+        experimental_options: Mapping[str, Any] | None = None,
     ) -> modal.Sandbox:
         """Compile, build, launch, and run the ready hooks for an environment."""
         self.envy.freeze()
@@ -570,6 +619,7 @@ class ModalRunner:
             name=name,
             image_key=str(env.name),
             tags=env_tags,
+            experimental_options=experimental_options,
         )
         try:
             env.refresh(sandbox)

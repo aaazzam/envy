@@ -85,11 +85,12 @@ control_plane_image = (
     .add_local_python_source("devboxes", copy=True)
 )
 
-mcp = app.mcp()
+github_secret = modal.Secret.from_name("acme-github")
+mcp = app.mcp(git_secret=github_secret)
 modal_app = modal.App(app.name)
 
 
-@modal_app.function(image=control_plane_image)
+@modal_app.function(image=control_plane_image, secrets=[github_secret])
 @modal.asgi_app()
 def serve():
     return mcp.http_app(stateless_http=True)
@@ -108,6 +109,26 @@ environments directly and exposes `create_sandbox`, `kill_sandbox`, `bash`,
 this server are accepted by the tools; ownership is checked using the reserved
 `envy.app` and `envy.env` tags. The sandbox image must provide `bash` and
 `ripgrep`; the latter is installed above for the `glob` and `grep` tools.
+
+### Publishing a committed branch
+
+MCP sandbox creation returns a stable logical `sandbox_id`; the underlying
+Modal Sandbox may be replaced after an exit. Envy enables Modal exit snapshots
+for these sandboxes and restores the workspace from its latest snapshot when a
+later tool call finds that the physical sandbox has exited. See Modal's
+[exit snapshot documentation](https://modal.com/docs/guide/sandbox-exit-snapshots)
+for the feature's current limitations.
+
+To let the server push and open GitHub pull requests, the control-plane
+function above must receive a Modal Secret containing `GITHUB_TOKEN`; the same
+Secret is passed to Envy so it can be injected only into the hidden publisher.
+
+The `publish_pull_request` tool refuses dirty trees, detached HEADs, and
+protected branches; it never stages or commits. It terminates the canonical
+sandbox into an exit snapshot, restores the agent workspace without the Git
+Secret, and gives a separate hidden sandbox the snapshot plus the Secret for
+the push. The control plane then creates the GitHub pull request through the
+REST API. The Secret is never placed in the agent-visible sandbox.
 
 ## Keeping images warm
 

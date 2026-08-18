@@ -479,6 +479,35 @@ class ModalRunnerTests(unittest.TestCase):
         self.assertEqual(started, modal.created_sandboxes)
         self.assertEqual(modal.from_id_calls, [])
 
+    def test_launch_can_enable_exit_snapshots(self):
+        modal = FakeModal()
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage())
+        runner = ModalRunner(envy, show_output=False, _modal=modal)
+
+        runner.launch("api", experimental_options={"enable_exit_snapshot": True})
+
+        self.assertEqual(
+            modal.create_calls[0]["experimental_options"],
+            {"enable_exit_snapshot": True},
+        )
+
+    def test_launch_from_snapshot_can_scope_secrets_to_publisher(self):
+        modal = FakeModal()
+        envy = Envy("acme-devboxes")
+        envy.env("api", base=FakeImage(), secrets=("environment-secret",))
+        runner = ModalRunner(envy, show_output=False, _modal=modal)
+        snapshot = FakeImage("exit-snapshot")
+
+        runner.launch_from_snapshot("api", snapshot, secrets=("git-secret",))
+
+        self.assertEqual(modal.create_calls[0]["image"], snapshot)
+        self.assertEqual(modal.create_calls[0]["secrets"], ("git-secret",))
+        self.assertEqual(
+            modal.create_calls[0]["experimental_options"],
+            {"enable_exit_snapshot": True},
+        )
+
     def test_session_launches_new_sandbox_and_only_detaches_on_exit(self):
         modal = FakeModal()
         envy = Envy("acme-devboxes")
