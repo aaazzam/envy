@@ -79,7 +79,7 @@ def serve():
 `control_plane_image` must contain the MCP dependencies and the Python package
 that declares `app`. The MCP server launches environments through Envy's
 deployed `launch_<environment>` functions and exposes `create_sandbox`,
-`kill_sandbox`, `bash`, `read`, `write`, `edit`, `glob`, `grep`, and `open_pr`.
+`kill_sandbox`, `bash`, `read`, `write`, `edit`, `glob`, and `grep`.
 Only sandboxes created through this server are accepted by the tools; ownership
 is checked using the reserved `envy.app` and `envy.env` tags.
 

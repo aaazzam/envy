@@ -15,11 +15,3 @@ class NotAFileError(MCPError, IsADirectoryError):
 
 class SandboxCommandError(MCPError, RuntimeError):
     """A command run inside a sandbox exited unsuccessfully."""
-
-
-class InvalidRepoError(MCPError, ValueError):
-    """A GitHub repo reference could not be normalized to ``owner/name``."""
-
-
-class GitHubAppNotInstalledError(MCPError, LookupError):
-    """The configured GitHub App is not installed on the requested account."""

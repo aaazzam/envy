@@ -96,7 +96,6 @@ class MCPTests(unittest.TestCase):
                 "edit",
                 "glob",
                 "grep",
-                "open_pr",
             }.issubset(tool_names(mcp))
         )
 
