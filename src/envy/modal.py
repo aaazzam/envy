@@ -212,6 +212,23 @@ class Envy:
             raise KeyError(f"environment {name!r} is not registered") from exc
         return cast(Env[Any], environment)
 
+    def mcp(self, **settings: Any) -> Any:
+        """Create an MCP server exposing this app's environments.
+
+        MCP support is optional. The import stays lazy so the core Envy package
+        remains usable without FastMCP; call ``app.mcp()`` only after
+        installing the ``envy[mcp]`` extra.
+        """
+        try:
+            from .mcp import create_server
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"fastmcp", "mcp", "modal"}:
+                raise
+            raise RuntimeError(
+                "MCP support is optional; install it with `uv add 'envy[mcp]'`"
+            ) from exc
+        return create_server(self, **settings)
+
     def env(
         self,
         name: str,

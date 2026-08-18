@@ -99,6 +99,11 @@ class MCPTests(unittest.TestCase):
             }.issubset(tool_names(mcp))
         )
 
+    def test_envy_mcp_method_creates_the_server(self) -> None:
+        mcp = make_envy("api").mcp()
+
+        self.assertIn("create_sandbox", tool_names(mcp))
+
     def test_create_sandbox_uses_environment_and_app_tag(self) -> None:
         envy = make_envy("api", "worker")
         sandbox = FakeSandbox()
