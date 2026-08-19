@@ -189,24 +189,22 @@ class ReadmeExampleTests(unittest.TestCase):
 
     def test_documented_python_examples_compile_and_register(self) -> None:
         blocks = re.findall(r"```python\n(.*?)```", README.read_text(), re.DOTALL)
-        self.assertEqual(len(blocks), 5)
+        self.assertEqual(len(blocks), 4)
 
         namespace: dict[str, object] = {"__name__": "readme_examples"}
         declaration_api: Any | None = None
-        for index in range(4):
+        for index in range(3):
             exec(compile(blocks[index], f"<README block {index}>", "exec"), namespace)
             if index == 0:
                 declaration_api = namespace["api"]
 
         api = cast(Any, namespace["api"])
-        runner = cast(Any, namespace["runner"])
         self.assertIsNotNone(declaration_api)
         self.assertIsInstance(
             cast(Any, declaration_api).spec(stamp="git-commit-or-release-id").image,
             modal.Image,
         )
         self.assertIsNot(namespace["control_plane_image"], api.spec().image)
-        self.assertIs(runner.app, namespace["modal_app"])
 
     def test_documented_launch_example_has_persistent_session_semantics(self) -> None:
         self.assertIn("with runner.session(api) as session:", README.read_text())

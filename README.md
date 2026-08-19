@@ -72,15 +72,15 @@ api.include(docs)
 
 `app.mcp()` creates a FastMCP server with sandbox lifecycle and workspace tools:
 `create_sandbox`, `kill_sandbox`, `bash`, `read`, `write`, `edit`, `glob`, and
-`grep`. The environment image needs `bash` and `ripgrep` for the search tools.
+`grep`. The sandbox image must provide `bash`; install `ripgrep` for `glob` and
+`grep`.
 
 The MCP control-plane image must include `envy[mcp]` and the module containing
-the declaration. Deploy it with `modal deploy`:
+the declaration. The control plane is separate from the sandbox image. Deploy
+it with `modal deploy devboxes.py`:
 
 ```python
 # devboxes.py
-import os
-
 import modal
 import envy
 
@@ -97,50 +97,21 @@ control_plane_image = (
     .add_local_python_source("devboxes", copy=True)
 )
 
-# Optional: add GitHub's pull-request and repository tools.
-github_secret = modal.Secret.from_name("acme-github")
-mcp = app.mcp(
-    git_secret=github_secret,
-    github_mcp_url=os.getenv(
-        "GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/"
-    ),
-)
+mcp = app.mcp()
 modal_app = modal.App(app.name)
 
 
-@modal_app.function(image=control_plane_image, secrets=[github_secret])
+@modal_app.function(image=control_plane_image)
 @modal.asgi_app()
 def serve():
     return mcp.http_app(stateless_http=True)
 ```
 
-GitHub tools are optional. If workspace publishing is enabled, the Modal
-Secret must provide `GITHUB_TOKEN`. A `create_pull_request` or
-`update_pull_request` call that includes `envy.sandbox_id` publishes the
-committed branch from that workspace first. Envy never stages or commits, and
-the token is only injected into the isolated publisher.
-
-## Keep images warm
-
-Rebake images on a schedule or through an authenticated endpoint:
-
-```python
-runner = envy.ModalRunner(app, modal_app=modal_app)
-
-runner.install_rebake_schedule(
-    modal_app,
-    cron="*/30 * * * *",
-)
-runner.install_rebake_endpoint(
-    modal_app,
-    token_secret="acme-devbox-rebake-token",
-)
-```
-
-The endpoint's Modal Secret must contain `ENVY_REBAKE_TOKEN`. It accepts a
-Bearer token and can rebake one environment with `{"environment": "api"}` or
-all environments with an empty body. Set `requires_proxy_auth=False` if Modal
-proxy authentication is not needed.
+GitHub's remote MCP tools are optional. Pass `github_mcp_url` to `app.mcp()`
+and provide `GITHUB_TOKEN` to the control-plane function when you need them.
+For workspace publishing, also pass `git_secret`; Envy then publishes a clean,
+committed workspace before a GitHub `create_pull_request` or
+`update_pull_request` call that includes `envy.sandbox_id`.
 
 ## Launch on Modal
 
@@ -157,6 +128,10 @@ with runner.session(api, sandbox_id=session.sandbox_id) as session:
 `session` builds, launches, refreshes, and starts a new sandbox. Exiting the
 session detaches the local handle without terminating the remote sandbox.
 `runner.run(api)` provides the imperative compile/build/launch path.
+
+Optional image caching is available through `runner.rebake()` and the
+`install_rebake_schedule()` / `install_rebake_endpoint()` helpers. Normal
+launches do not require a rebake.
 
 ## Public building blocks
 
